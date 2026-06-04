@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
+import { explainProposal } from './explain.js';
+import { searchLiterature } from './literature.js';
 import { proposalLatexToPdf } from './pdfExport.js';
 import { answerAgentQuestion, generateProposal, startAgentSession } from './proposalGenerator.js';
 
@@ -67,6 +69,57 @@ app.post('/api/proposal', async (request, response) => {
   } catch (error) {
     response.status(500).json({
       error: 'Proposal generation failed.',
+      detail: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
+app.post('/api/literature', async (request, response) => {
+  try {
+    const payload = request.body || {};
+    const topic = String(payload.topic || payload.project?.topic || payload.project?.title || '').trim();
+
+    if (!topic && !String(payload.problem || payload.project?.problem || '').trim()) {
+      response.status(400).json({ error: 'Topic or problem text is required for literature search.' });
+      return;
+    }
+
+    response.json(
+      await searchLiterature({
+        topic,
+        problem: payload.problem || payload.project?.problem,
+        source: payload.source,
+        limit: payload.limit
+      })
+    );
+  } catch (error) {
+    response.status(500).json({
+      error: 'Literature search failed.',
+      detail: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
+app.post('/api/explain', async (request, response) => {
+  try {
+    const payload = request.body || {};
+    const project = payload.project || {};
+
+    if (!String(project.title || project.topic || '').trim() && !String(payload.proposalLatex || '').trim()) {
+      response.status(400).json({ error: 'A project (with a topic/title) or proposalLatex is required.' });
+      return;
+    }
+
+    response.json(
+      await explainProposal({
+        project,
+        proposalLatex: payload.proposalLatex,
+        level: payload.level
+      })
+    );
+  } catch (error) {
+    response.status(500).json({
+      error: 'Explanation failed.',
       detail: error instanceof Error ? error.message : String(error)
     });
   }

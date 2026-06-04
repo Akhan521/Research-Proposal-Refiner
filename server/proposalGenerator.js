@@ -21,6 +21,7 @@ const EMPTY_PROJECT_FOR_SERVER = {
   evaluation: '',
   resources: '',
   references: '',
+  layAbstract: '',
   requirements: DEFAULT_REQUIREMENTS
 };
 
@@ -51,7 +52,9 @@ Rules:
 - Mark unsupported claims as assumptions.
 - Include a concrete agent workflow when the method involves an agent.
 - Include at least one LaTeX-native figure, diagram, workflow chart, or architecture sketch with a caption.
-- Do not invent citations. Use source notes or assumptions when sources are missing.`;
+- Use citation strings provided in project.references when they look like real retrieved sources (title, authors, year, URL/DOI). Do not invent additional citations.
+- Mark only unsupported claims as assumptions when references are missing or vague.
+- If the project provides a "layAbstract", add a short "Plain-Language Summary" section near the top that uses that accessible text so non-expert readers can understand the work.`;
 
 const QUESTION_SYSTEM_PROMPT = `You are running an interactive proposal-agent workflow.
 
@@ -277,7 +280,7 @@ async function generateWithApi(project, checklist) {
   };
 }
 
-async function callModel({ systemPrompt, payload, model, temperature }) {
+export async function callModel({ systemPrompt, payload, model, temperature }) {
   if (getProvider() === 'gemini') {
     return callGemini({ systemPrompt, payload, model, temperature });
   }
@@ -422,7 +425,7 @@ function buildLocalProposalLatex(project) {
 \begin{abstract}
 This project builds a proposal agent that turns a rough research direction into a structured research proposal. The workflow collects project intent, calls an API-backed generator when configured, produces a LaTeX proposal draft, checks requirements, and lists revision questions.
 \end{abstract}
-
+${plainLanguageSummarySection(project)}
 \section{Motivation and Gap}
 ${latexParagraph(problem)}
 
@@ -720,14 +723,14 @@ function buildDecisionCards(project) {
 function normalizeFieldSuggestions(suggestions, project) {
   const parsed = Array.isArray(suggestions)
     ? suggestions
-        .map((item) => ({
-          field: clean(item.field),
-          label: clean(item.label) || labelForField(item.field),
-          value: clean(item.value),
-          confidence: clean(item.confidence) || 'Medium',
-          reason: clean(item.reason) || 'Suggested by the model from the rough idea.'
-        }))
-        .filter((item) => item.field && item.value)
+      .map((item) => ({
+        field: clean(item.field),
+        label: clean(item.label) || labelForField(item.field),
+        value: clean(item.value),
+        confidence: clean(item.confidence) || 'Medium',
+        reason: clean(item.reason) || 'Suggested by the model from the rough idea.'
+      }))
+      .filter((item) => item.field && item.value)
     : [];
 
   const fallback = buildFieldSuggestions(project);
@@ -740,22 +743,22 @@ function normalizeFieldSuggestions(suggestions, project) {
 function normalizeDecisions(decisions, project) {
   const parsed = Array.isArray(decisions)
     ? decisions
-        .map((decision, index) => ({
-          id: clean(decision.id) || `decision-${index + 1}`,
-          title: clean(decision.title) || 'Decision Needed',
-          field: clean(decision.field) || 'problem',
-          question: clean(decision.question) || 'Which option best fits the project?',
-          options: Array.isArray(decision.options)
-            ? decision.options
-                .map((option) => ({
-                  label: clean(option.label),
-                  value: clean(option.value),
-                  rationale: clean(option.rationale)
-                }))
-                .filter((option) => option.label && option.value)
-            : []
-        }))
-        .filter((decision) => decision.options.length)
+      .map((decision, index) => ({
+        id: clean(decision.id) || `decision-${index + 1}`,
+        title: clean(decision.title) || 'Decision Needed',
+        field: clean(decision.field) || 'problem',
+        question: clean(decision.question) || 'Which option best fits the project?',
+        options: Array.isArray(decision.options)
+          ? decision.options
+            .map((option) => ({
+              label: clean(option.label),
+              value: clean(option.value),
+              rationale: clean(option.rationale)
+            }))
+            .filter((option) => option.label && option.value)
+          : []
+      }))
+      .filter((decision) => decision.options.length)
     : [];
 
   return parsed.length ? parsed : buildDecisionCards(project);
@@ -890,6 +893,7 @@ function normalizePayload(payload) {
     evaluation: clean(payload.evaluation),
     resources: clean(payload.resources),
     references: clean(payload.references),
+    layAbstract: clean(payload.layAbstract),
     requirements: clean(payload.requirements) || DEFAULT_REQUIREMENTS
   };
 }
@@ -941,7 +945,7 @@ function readModelContent(data) {
   return JSON.stringify(data);
 }
 
-function parseJsonContent(content) {
+export function parseJsonContent(content) {
   const trimmed = clean(content);
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fenced?.[1] || trimmed;
@@ -963,17 +967,17 @@ function coerceResult(result, project, checklist) {
     proposalLatex: extractProposalLatex(result, project),
     complianceMatrix: Array.isArray(result.complianceMatrix) && result.complianceMatrix.length
       ? result.complianceMatrix.map((row) => ({
-          requirement: clean(row.requirement),
-          status: clean(row.status) || 'Needs work',
-          evidence: clean(row.evidence),
-          fix: clean(row.fix)
-        }))
+        requirement: clean(row.requirement),
+        status: clean(row.status) || 'Needs work',
+        evidence: clean(row.evidence),
+        fix: clean(row.fix)
+      }))
       : checklist.map((requirement) => ({
-          requirement,
-          status: 'Needs work',
-          evidence: 'API did not provide matrix evidence.',
-          fix: 'Regenerate with stricter output instructions.'
-        })),
+        requirement,
+        status: 'Needs work',
+        evidence: 'API did not provide matrix evidence.',
+        fix: 'Regenerate with stricter output instructions.'
+      })),
     evaluationReport: clean(result.evaluationReport) || '# Evaluation Report\n\nNo evaluation report returned.',
     questions: Array.isArray(result.questions) ? result.questions.map(clean).filter(Boolean).slice(0, 5) : []
   };
@@ -1043,7 +1047,7 @@ function isSpecific(value, length) {
   return clean(value).length >= length;
 }
 
-function clean(value) {
+export function clean(value) {
   return String(value || '').trim();
 }
 
@@ -1062,6 +1066,14 @@ function extractNestedLatexString(value) {
     .replace(/\\n/g, '\n')
     .replace(/\\"/g, '"')
     .replace(/\\\\/g, '\\');
+}
+
+function plainLanguageSummarySection(project) {
+  const layAbstract = clean(project.layAbstract);
+
+  if (!layAbstract) return '';
+
+  return `\n\\section*{Plain-Language Summary}\n${latexParagraph(layAbstract)}\n`;
 }
 
 function latexParagraph(value) {
