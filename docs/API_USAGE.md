@@ -28,6 +28,8 @@ API keys stay on the server and are not sent to the browser.
 
 ## API Endpoints
 
+- `POST /api/literature`: topic/problem in, retrieved papers and optional related-work paragraph out.
+- `POST /api/explain`: project/proposal in, plain-language explanation at a chosen reading level out.
 - `POST /api/agent/start`: rough topic in, project state and questions out.
 - `POST /api/agent/answer`: current state plus student answer in, updated state and next questions out.
 - `POST /api/proposal`: refined state in, `proposalLatex` and review artifacts out.

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  BookOpen,
   CheckCircle2,
   ClipboardCheck,
   Download,
@@ -35,6 +36,7 @@ const EMPTY_PROJECT = {
   evaluation: '',
   resources: '',
   references: '',
+  layAbstract: '',
   requirements: DEFAULT_REQUIREMENTS
 };
 
@@ -59,7 +61,22 @@ const TABS = [
   ['pdf', FileText, 'PDF'],
   ['latex', FileText, 'LaTeX'],
   ['matrix', ClipboardCheck, 'Matrix'],
-  ['evaluation', ListChecks, 'Review']
+  ['evaluation', ListChecks, 'Review'],
+  ['explain', Sparkles, 'Explain']
+];
+
+const EXPLAIN_LEVELS = [
+  ['kid', '5th grader'],
+  ['highschool', 'High schooler'],
+  ['undergrad', 'Undergrad'],
+  ['expert', 'Expert / peer']
+];
+
+const LITERATURE_SOURCE_OPTIONS = [
+  ['auto', 'Auto (by topic)'],
+  ['semantic_scholar', 'Semantic Scholar'],
+  ['openalex', 'OpenAlex'],
+  ['arxiv', 'arXiv']
 ];
 
 const MEMORY_KEY = 'proposal-agent-final-project-memory-v1';
@@ -81,6 +98,12 @@ function App() {
   const [decisionIndex, setDecisionIndex] = useState(0);
   const [memorySavedAt, setMemorySavedAt] = useState('');
   const [memoryReady, setMemoryReady] = useState(false);
+  const [explain, setExplain] = useState(null);
+  const [explainLevel, setExplainLevel] = useState('kid');
+  const [explainStatus, setExplainStatus] = useState('idle');
+  const [literature, setLiterature] = useState(null);
+  const [literatureSource, setLiteratureSource] = useState('auto');
+  const [literatureStatus, setLiteratureStatus] = useState('idle');
 
   const matrixStats = useMemo(() => {
     const rows = result?.complianceMatrix || [];
@@ -233,6 +256,112 @@ function App() {
     }
   }
 
+  async function searchLiterature() {
+    const topic = project.title || project.topic || topicInput;
+    if (!topic.trim() && !project.problem.trim()) return;
+
+    setLiteratureStatus('loading');
+    setError('');
+
+    try {
+      const data = await postJson('/api/literature', {
+        topic,
+        problem: project.problem,
+        source: literatureSource,
+        limit: 8
+      });
+
+      setLiterature(data);
+      setRunLog((current) => [
+        ...current,
+        logEntry('Literature', data.runMessage || `Retrieved ${data.papers?.length || 0} paper(s).`)
+      ]);
+    } catch (requestError) {
+      setError(readError(requestError));
+    } finally {
+      setLiteratureStatus('idle');
+    }
+  }
+
+  function addPaperToReferences(paper) {
+    const citation = paper?.citation;
+    if (!citation) return;
+
+    setProject((current) => {
+      const base = String(current.references || '').trim();
+      if (base.includes(citation)) return current;
+
+      return {
+        ...current,
+        references: base ? `${base}\n${citation}` : citation
+      };
+    });
+    clearArtifacts();
+    setRunLog((current) => [...current, logEntry('Literature', `Added citation: ${paper.title}.`)]);
+  }
+
+  function insertRelatedWork() {
+    const paragraph = literature?.relatedWorkParagraph;
+    if (!paragraph) return;
+
+    setProject((current) => ({
+      ...current,
+      problem: mergeTextField(current.problem, paragraph)
+    }));
+    clearArtifacts();
+    setRunLog((current) => [...current, logEntry('Literature', 'Inserted related-work paragraph into Problem.')]);
+  }
+
+  async function runExplain(level) {
+    if (!result?.proposalLatex && !project.title && !project.topic) return;
+
+    setExplainStatus('loading');
+    setError('');
+
+    try {
+      const data = await postJson('/api/explain', {
+        project,
+        proposalLatex: result?.proposalLatex || '',
+        level
+      });
+
+      setExplain(data);
+      setRunLog((current) => [
+        ...current,
+        logEntry('Explain', `Explained the proposal for a ${data.levelLabel || level} reader using ${data.mode}.`)
+      ]);
+    } catch (requestError) {
+      setError(readError(requestError));
+    } finally {
+      setExplainStatus('idle');
+    }
+  }
+
+  function changeExplainLevel(level) {
+    setExplainLevel(level);
+    runExplain(level);
+  }
+
+  function insertLayAbstract() {
+    const layAbstract = explain?.layAbstract;
+    if (!layAbstract) return;
+
+    setProject((current) => ({ ...current, layAbstract }));
+    setRunLog((current) => [
+      ...current,
+      logEntry('Explain', 'Added the lay abstract; it will appear as a Plain-Language Summary in the next draft.')
+    ]);
+  }
+
+  useEffect(() => {
+    if (activeTab !== 'explain') return;
+    if (explain || explainStatus !== 'idle') return;
+    if (!result?.proposalLatex && !project.title && !project.topic) return;
+
+    runExplain(explainLevel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
   function acceptSuggestion(suggestion) {
     updateProjectField(suggestion.field, suggestion.value);
     advanceSuggestion();
@@ -281,6 +410,7 @@ function App() {
   function clearArtifacts() {
     setResult(null);
     updatePdfUrl('');
+    setExplain(null);
   }
 
   function updatePdfUrl(nextUrl) {
@@ -303,6 +433,10 @@ function App() {
     setActiveTab('pdf');
     setSuggestionIndex(0);
     setDecisionIndex(0);
+    setExplain(null);
+    setExplainLevel('kid');
+    setLiterature(null);
+    setLiteratureSource('auto');
   }
 
   function downloadLatex() {
@@ -465,6 +599,18 @@ function App() {
 
           {error ? <p className="error-banner">{error}</p> : null}
 
+          {(project.title || project.topic || topicInput.trim()) ? (
+            <LiteraturePanel
+              literature={literature}
+              source={literatureSource}
+              status={literatureStatus}
+              references={project.references}
+              onSourceChange={setLiteratureSource}
+              onSearch={searchLiterature}
+              onAddPaper={addPaperToReferences}
+              onInsertRelatedWork={insertRelatedWork}
+            />
+          ) : null}
 
           <div className="workflow-grid" aria-label="Workflow stages">
             {STAGES.map(([number, title, description], index) => (
@@ -716,7 +862,20 @@ function App() {
                 </div>
               </div>
 
-              {renderArtifact(activeTab, result, pdfUrl)}
+              {activeTab === 'explain' ? (
+                <ExplainPanel
+                  explain={explain}
+                  level={explainLevel}
+                  status={explainStatus}
+                  hasProposal={Boolean(result?.proposalLatex)}
+                  layAbstractInserted={Boolean(project.layAbstract) && project.layAbstract === explain?.layAbstract}
+                  onChangeLevel={changeExplainLevel}
+                  onRefresh={() => runExplain(explainLevel)}
+                  onInsertLayAbstract={insertLayAbstract}
+                />
+              ) : (
+                renderArtifact(activeTab, result, pdfUrl)
+              )}
             </section>
           </div>
         </section>
@@ -806,6 +965,226 @@ function renderArtifact(activeTab, result, pdfUrl) {
   }
 
   return <pre className="proposal-output">{result.proposalLatex}</pre>;
+}
+
+function ExplainPanel({
+  explain,
+  level,
+  status,
+  hasProposal,
+  layAbstractInserted,
+  onChangeLevel,
+  onRefresh,
+  onInsertLayAbstract
+}) {
+  const levelIndex = Math.max(0, EXPLAIN_LEVELS.findIndex(([id]) => id === level));
+
+  return (
+    <div className="explain-panel">
+      <div className="explain-controls">
+        <div className="explain-slider">
+          <label htmlFor="explain-level">
+            Reading level: <strong>{EXPLAIN_LEVELS[levelIndex]?.[1] || '5th grader'}</strong>
+          </label>
+          <input
+            id="explain-level"
+            type="range"
+            min={0}
+            max={EXPLAIN_LEVELS.length - 1}
+            step={1}
+            value={levelIndex}
+            onChange={(event) => onChangeLevel(EXPLAIN_LEVELS[Number(event.target.value)][0])}
+          />
+          <div className="explain-ticks">
+            {EXPLAIN_LEVELS.map(([id, label]) => (
+              <span key={id} className={id === level ? 'tick active' : 'tick'}>
+                {label}
+              </span>
+            ))}
+          </div>
+        </div>
+        <button className="secondary" type="button" onClick={onRefresh} disabled={status === 'loading'}>
+          {status === 'loading' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
+          Re-explain
+        </button>
+      </div>
+
+      {status === 'loading' && !explain ? (
+        <EmptyState text="Generating a plain-language explanation." />
+      ) : explain ? (
+        <div className="explain-content">
+          <p className="explain-tagline">{explain.tagline}</p>
+
+          <div className="explain-block">
+            <h3>Like this&hellip;</h3>
+            <p>{explain.analogy}</p>
+          </div>
+          <div className="explain-block">
+            <h3>What it is</h3>
+            <p>{explain.whatItIs}</p>
+          </div>
+          <div className="explain-block">
+            <h3>Why it matters</h3>
+            <p>{explain.whyItMatters}</p>
+          </div>
+          <div className="explain-block">
+            <h3>How it works</h3>
+            <p>{explain.howItWorks}</p>
+          </div>
+
+          {explain.glossary?.length ? (
+            <div className="explain-block">
+              <h3>Words to know</h3>
+              <ul className="explain-glossary">
+                {explain.glossary.map((entry) => (
+                  <li key={entry.term}>
+                    <strong>{entry.term}:</strong> {entry.plain}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {explain.layAbstract ? (
+            <div className="explain-block lay-abstract">
+              <h3>Lay abstract</h3>
+              <p>{explain.layAbstract}</p>
+              <button className="primary" type="button" onClick={onInsertLayAbstract} disabled={layAbstractInserted}>
+                <CheckCircle2 size={16} aria-hidden="true" />
+                {layAbstractInserted ? 'Added to proposal' : 'Insert into proposal'}
+              </button>
+              {layAbstractInserted ? (
+                <small>It will appear as a Plain-Language Summary the next time you generate the proposal.</small>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <EmptyState
+          text={hasProposal ? 'Pick a reading level to explain this proposal.' : 'Generate a proposal first, then explain it at any reading level.'}
+        />
+      )}
+    </div>
+  );
+}
+
+function LiteraturePanel({
+  literature,
+  source,
+  status,
+  references,
+  onSourceChange,
+  onSearch,
+  onAddPaper,
+  onInsertRelatedWork
+}) {
+  const resolvedLabel =
+    LITERATURE_SOURCE_OPTIONS.find(([id]) => id === literature?.resolvedSource)?.[1] ||
+    literature?.resolvedSource ||
+    '';
+
+  return (
+    <section className="literature-panel">
+      <div className="panel-header">
+        <h2>
+          <BookOpen size={18} aria-hidden="true" />
+          Literature Retriever
+        </h2>
+        <span>{literature?.papers?.length ? `${literature.papers.length} papers` : 'Not searched yet'}</span>
+      </div>
+
+      <div className="literature-controls">
+        <label htmlFor="literature-source">
+          Source
+          <select id="literature-source" value={source} onChange={(event) => onSourceChange(event.target.value)}>
+            {LITERATURE_SOURCE_OPTIONS.map(([id, label]) => (
+              <option key={id} value={id}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button className="primary" type="button" onClick={onSearch} disabled={status === 'loading'}>
+          {status === 'loading' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <BookOpen size={16} aria-hidden="true" />}
+          Find Literature
+        </button>
+      </div>
+
+      {literature?.resolvedSource && source === 'auto' ? (
+        <p className="literature-meta">
+          Auto picked <strong>{resolvedLabel}</strong> for this topic.
+        </p>
+      ) : null}
+
+      {literature?.resolvedSource && source !== 'auto' && literature.resolvedSource !== source ? (
+        <p className="literature-meta">
+          <strong>{LITERATURE_SOURCE_OPTIONS.find(([id]) => id === source)?.[1]}</strong> was unavailable; results came from{' '}
+          <strong>{resolvedLabel}</strong>.
+        </p>
+      ) : null}
+
+      {status === 'loading' && !literature?.papers?.length ? (
+        <EmptyState text="Searching scholarly APIs for relevant papers." compact />
+      ) : null}
+
+      {literature?.relatedWorkParagraph ? (
+        <div className="literature-block">
+          <h3>Related work (draft)</h3>
+          <p>{literature.relatedWorkParagraph}</p>
+          {literature.gapNote ? <small>{literature.gapNote}</small> : null}
+          <button className="secondary" type="button" onClick={onInsertRelatedWork}>
+            Insert into Problem
+          </button>
+        </div>
+      ) : null}
+
+      {literature?.papers?.length ? (
+        <div className="literature-results">
+          {literature.papers.map((paper) => {
+            const added = String(references || '').includes(paper.citation);
+
+            return (
+              <article className="literature-card" key={paper.id}>
+                <div className="card-line">
+                  <h3>{paper.title}</h3>
+                  <span className="literature-badge">{paper.source}</span>
+                </div>
+                <p className="literature-authors">
+                  {paper.authors?.length ? paper.authors.join(', ') : 'Unknown authors'}
+                  {paper.year ? ` · ${paper.year}` : ''}
+                  {paper.citationCount ? ` · ${paper.citationCount} citations` : ''}
+                </p>
+                {paper.abstract ? <p className="literature-abstract">{paper.abstract}</p> : null}
+                {paper.relevanceNote ? <small>{paper.relevanceNote}</small> : null}
+                <div className="literature-card-actions">
+                  <button className={added ? 'secondary accepted' : 'primary'} type="button" onClick={() => onAddPaper(paper)} disabled={added}>
+                    <CheckCircle2 size={16} aria-hidden="true" />
+                    {added ? 'In references' : 'Add to references'}
+                  </button>
+                  {paper.url ? (
+                    <a className="secondary literature-link" href={paper.url} target="_blank" rel="noreferrer">
+                      Open paper
+                    </a>
+                  ) : null}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : literature && !literature.papers?.length ? (
+        <EmptyState text="No papers found. Try another source or refine your topic." compact />
+      ) : null}
+    </section>
+  );
+}
+
+function mergeTextField(current, addition) {
+  const base = String(current || '').trim();
+  const next = String(addition || '').trim();
+  if (!base) return next;
+  if (!next) return base;
+  if (base.includes(next)) return base;
+  return `${base}\n\n${next}`;
 }
 
 function PanelHeader({ title, meta }) {
