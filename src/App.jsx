@@ -556,28 +556,14 @@ function App() {
 
   function changeExplainLevel(level) {
     setExplainLevel(level);
-    runExplain(level);
+    if (explain) {
+      runExplain(level);
+    }
   }
 
-  function insertLayAbstract() {
-    const layAbstract = explain?.layAbstract;
-    if (!layAbstract) return;
-
-    setProject((current) => ({ ...current, layAbstract }));
-    setRunLog((current) => [
-      ...current,
-      logEntry('Explain', 'Added the lay abstract; it will appear as a Plain-Language Summary in the next draft.')
-    ]);
-  }
-
-  useEffect(() => {
-    if (activeTab !== 'explain') return;
-    if (explain || explainStatus !== 'idle') return;
-    if (!result?.proposalLatex && !project.title && !project.topic) return;
-
+  function startExplain() {
     runExplain(explainLevel);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab]);
+  }
 
   function acceptSuggestion(suggestion) {
     const field = suggestion.field;
@@ -1189,6 +1175,7 @@ function App() {
                   {PROJECT_FIELDS.map(([field, label]) => (
                     <ProjectFieldCard
                       key={field}
+                      field={field}
                       label={label}
                       value={project[field] || ''}
                       isOpen={focusedProjectField === field}
@@ -1270,8 +1257,12 @@ function App() {
                     </div>
                     <div className="artifact-summary-item artifact-summary-item--provider">
                       <span>Provider</span>
-                      <strong>{generationProvider.label}</strong>
-                      {generationProvider.meta ? <small>{generationProvider.meta}</small> : null}
+                      <div className="provider-display">
+                        <strong className="provider-display-label">{generationProvider.label}</strong>
+                        {generationProvider.meta ? (
+                          <span className="provider-display-meta">{generationProvider.meta}</span>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
 
@@ -1288,10 +1279,8 @@ function App() {
                         level={explainLevel}
                         status={explainStatus}
                         hasProposal={Boolean(result?.proposalLatex)}
-                        layAbstractInserted={Boolean(project.layAbstract) && project.layAbstract === explain?.layAbstract}
                         onChangeLevel={changeExplainLevel}
-                        onRefresh={() => runExplain(explainLevel)}
-                        onInsertLayAbstract={insertLayAbstract}
+                        onExplain={startExplain}
                       />
                     ) : (
                       renderArtifact(activeTab, result, {
@@ -1425,17 +1414,9 @@ function renderArtifact(activeTab, result, { pdfUrl, pdfStatus, pdfExportError, 
   return <pre className="proposal-output">{result.proposalLatex}</pre>;
 }
 
-function ExplainPanel({
-  explain,
-  level,
-  status,
-  hasProposal,
-  layAbstractInserted,
-  onChangeLevel,
-  onRefresh,
-  onInsertLayAbstract
-}) {
+function ExplainPanel({ explain, level, status, hasProposal, onChangeLevel, onExplain }) {
   const levelIndex = Math.max(0, EXPLAIN_LEVELS.findIndex(([id]) => id === level));
+  const isLoading = status === 'loading';
 
   return (
     <div className="explain-panel">
@@ -1451,6 +1432,7 @@ function ExplainPanel({
             max={EXPLAIN_LEVELS.length - 1}
             step={1}
             value={levelIndex}
+            disabled={!hasProposal || isLoading}
             onChange={(event) => onChangeLevel(EXPLAIN_LEVELS[Number(event.target.value)][0])}
           />
           <div className="explain-ticks">
@@ -1461,14 +1443,26 @@ function ExplainPanel({
             ))}
           </div>
         </div>
-        <button className="secondary" type="button" onClick={onRefresh} disabled={status === 'loading'}>
-          {status === 'loading' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
-          Re-explain
-        </button>
+
+        <div className="explain-action-row">
+          {!hasProposal ? (
+            <p className="explain-action-hint">Generate a proposal first, then explain it here at any reading level.</p>
+          ) : (
+            <button
+              className="primary explain-action-btn"
+              type="button"
+              onClick={onExplain}
+              disabled={isLoading}
+            >
+              {isLoading ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Sparkles size={16} aria-hidden="true" />}
+              {isLoading ? 'Explaining…' : explain ? 'Re-explain' : 'Explain proposal'}
+            </button>
+          )}
+        </div>
       </div>
 
-      {status === 'loading' && !explain ? (
-        <EmptyState text="Generating a plain-language explanation." />
+      {isLoading && !explain ? (
+        <EmptyState text="Generating a plain-language explanation for this reading level." compact />
       ) : explain ? (
         <div className="explain-content">
           <p className="explain-tagline">{explain.tagline}</p>
@@ -1504,24 +1498,15 @@ function ExplainPanel({
           ) : null}
 
           {explain.layAbstract ? (
-            <div className="explain-block lay-abstract">
-              <h3>Lay abstract</h3>
+            <div className="explain-block">
+              <h3>Plain-language summary</h3>
               <p>{explain.layAbstract}</p>
-              <button className="primary" type="button" onClick={onInsertLayAbstract} disabled={layAbstractInserted}>
-                <CheckCircle2 size={16} aria-hidden="true" />
-                {layAbstractInserted ? 'Added to proposal' : 'Insert into proposal'}
-              </button>
-              {layAbstractInserted ? (
-                <small>It will appear as a Plain-Language Summary the next time you generate the proposal.</small>
-              ) : null}
             </div>
           ) : null}
         </div>
-      ) : (
-        <EmptyState
-          text={hasProposal ? 'Pick a reading level to explain this proposal.' : 'Generate a proposal first, then explain it at any reading level.'}
-        />
-      )}
+      ) : hasProposal ? (
+        <EmptyState text="Choose a reading level above, then click Explain proposal." compact />
+      ) : null}
     </div>
   );
 }
@@ -2364,8 +2349,8 @@ function normalizeMemorySnapshot(value) {
   };
 }
 
-function ProjectFieldCard({ label, value, isOpen, onOpen }) {
-  const summary = summarizeFieldContent(value);
+function ProjectFieldCard({ field, label, value, isOpen, onOpen }) {
+  const summary = summarizeFieldContent(value, field);
   const filled = Boolean(String(value || '').trim());
 
   return (
@@ -2453,18 +2438,96 @@ function ProjectFieldEditor({ field, label, value, onChange, onClose, inputRef }
   );
 }
 
-function summarizeFieldContent(text, maxSentences = 2) {
-  const value = String(text || '').replace(/\s+/g, ' ').trim();
+function summarizeFieldContent(text, field = '', maxLength = 220) {
+  const value = String(text || '').trim();
   if (!value) return 'No content yet — expand to add details.';
 
-  const sentences = value.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g) || [value];
-  const trimmed = sentences.map((part) => part.trim()).filter(Boolean);
-
-  if (trimmed.length <= maxSentences) {
-    return value.length > 320 ? `${value.slice(0, 317).trim()}…` : value;
+  if (field === 'references') {
+    return summarizeReferencesPreview(value, maxLength);
   }
 
-  return trimmed.slice(0, maxSentences).join(' ');
+  if (field === 'resources') {
+    return summarizeStructuredPreview(value, maxLength);
+  }
+
+  return summarizeProsePreview(value, maxLength);
+}
+
+function summarizeReferencesPreview(text, maxLength) {
+  const lines = splitPreviewLines(text);
+
+  for (const line of lines) {
+    const cleaned = stripListMarker(line);
+    if (isMeaningfulPreviewChunk(cleaned, 16)) {
+      return truncatePreview(cleaned, maxLength);
+    }
+  }
+
+  const flat = collapsePreviewWhitespace(text);
+  const withoutMarkers = flat.replace(/(?:^|\s)\d+[\).\]]\s*/g, ' ').replace(/\s+/g, ' ').trim();
+  return truncatePreview(withoutMarkers || flat, maxLength);
+}
+
+function summarizeStructuredPreview(text, maxLength) {
+  const lines = splitPreviewLines(text);
+
+  for (const line of lines) {
+    const cleaned = stripListMarker(line);
+    if (isMeaningfulPreviewChunk(cleaned, 12)) {
+      return truncatePreview(cleaned, maxLength);
+    }
+  }
+
+  return summarizeProsePreview(text, maxLength);
+}
+
+function summarizeProsePreview(text, maxLength) {
+  const flat = collapsePreviewWhitespace(text);
+  const start = flat.search(/[A-Za-z0-9]/);
+  const meaningful = start >= 0 ? flat.slice(start) : flat;
+  const firstSentence = meaningful.match(/^[^.!?]+[.!?]/)?.[0]?.trim() || meaningful;
+
+  return truncatePreview(firstSentence.length >= 24 ? firstSentence : meaningful, maxLength);
+}
+
+function splitPreviewLines(text) {
+  return String(text || '')
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function stripListMarker(line) {
+  return String(line || '')
+    .replace(/^[-*•]\s+/, '')
+    .replace(/^\d+[\).\]]\s+/, '')
+    .trim();
+}
+
+function collapsePreviewWhitespace(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
+function isMeaningfulPreviewChunk(text, minLength = 12) {
+  const value = String(text || '').trim();
+  if (value.length < minLength) return false;
+  if (/^[,;:.)\]]+$/.test(value)) return false;
+  if (/^et al\.?$/i.test(value)) return false;
+  if (/^\d+[\).\]]?$/.test(value)) return false;
+  if (/^[,;:.)\]]+\s*et al\.?/i.test(value)) return false;
+  return /[A-Za-z]{3,}/.test(value);
+}
+
+function truncatePreview(text, maxLength) {
+  const value = String(text || '').trim();
+  if (!value) return 'No content yet — expand to add details.';
+  if (value.length <= maxLength) return value;
+
+  const slice = value.slice(0, maxLength);
+  const lastSpace = slice.lastIndexOf(' ');
+  const trimmed = (lastSpace > maxLength * 0.55 ? slice.slice(0, lastSpace) : slice).trim();
+
+  return `${trimmed}…`;
 }
 
 function PanelHeader({ title, meta }) {

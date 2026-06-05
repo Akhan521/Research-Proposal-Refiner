@@ -26,10 +26,13 @@ Return strict JSON with this shape:
 }
 
 Rules:
+- Output must be JSON only. No preamble, no markdown, no code fences.
+- The payload includes a checklist array. The complianceMatrix must include exactly one row per checklist item, in the same order, and each "requirement" must match the checklist text exactly.
 - The proposal artifact must be LaTeX, not Markdown.
 - Return a complete LaTeX document with \\documentclass[11pt]{article}, 1-inch margins, title, sections, and bibliography/source notes.
 - Use compile-safe LaTeX. Avoid minted, shell-escape, external images, custom fonts, or packages that require extra system tools.
 - Do not use \\includegraphics or reference external image files. Build figures directly in LaTeX with text boxes, minipages, tabular layouts, lists, or simple arrows.
+- Ensure LaTeX compiles under Tectonic: escape special characters in text (\\&, \\%, \\#, \\_, \\{, \\}) and avoid stray $.
 - Write the final artifact as a research proposal, not as a short course implementation report.
 - Keep the proposed research plan credible, appropriately scoped, and supported by milestones, resources, risks, and evaluation criteria.
 - Mark unsupported claims as assumptions.
@@ -979,11 +982,20 @@ function readModelContent(data) {
 export function parseJsonContent(content) {
   const trimmed = clean(content);
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced?.[1] || trimmed;
+  const candidate = (fenced?.[1] || trimmed).trim();
 
   try {
     return JSON.parse(candidate);
   } catch {
+    const extracted = extractLikelyJsonObject(candidate);
+    if (extracted) {
+      try {
+        return JSON.parse(extracted);
+      } catch {
+        // fall through
+      }
+    }
+
     return {
       proposalLatex: looksLikeLatex(trimmed) ? trimmed : '',
       complianceMatrix: [],
@@ -993,22 +1005,51 @@ export function parseJsonContent(content) {
   }
 }
 
+function extractLikelyJsonObject(text) {
+  const value = String(text || '').trim();
+  const start = value.indexOf('{');
+  const end = value.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) return '';
+
+  const candidate = value.slice(start, end + 1).trim();
+  if (!candidate.startsWith('{') || !candidate.endsWith('}')) return '';
+  return candidate;
+}
+
 function coerceResult(result, project, checklist) {
-  return {
-    proposalLatex: extractProposalLatex(result, project),
-    complianceMatrix: Array.isArray(result.complianceMatrix) && result.complianceMatrix.length
-      ? result.complianceMatrix.map((row) => ({
+  const normalizedRows = Array.isArray(result.complianceMatrix)
+    ? result.complianceMatrix
+      .filter(Boolean)
+      .map((row) => ({
         requirement: clean(row.requirement),
         status: clean(row.status) || 'Needs work',
         evidence: clean(row.evidence),
         fix: clean(row.fix)
       }))
-      : checklist.map((requirement) => ({
-        requirement,
-        status: 'Needs work',
-        evidence: 'API did not provide matrix evidence.',
-        fix: 'Regenerate with stricter output instructions.'
-      })),
+    : [];
+
+  const rowByRequirement = new Map(
+    normalizedRows
+      .filter((row) => row.requirement)
+      .map((row) => [row.requirement.toLowerCase(), row])
+  );
+
+  const filledMatrix = checklist.map((requirement) => {
+    const key = clean(requirement).toLowerCase();
+    const found = rowByRequirement.get(key);
+    if (found) return { ...found, requirement };
+
+    return {
+      requirement,
+      status: 'Needs work',
+      evidence: 'API did not provide matrix evidence.',
+      fix: 'Regenerate with stricter output instructions.'
+    };
+  });
+
+  return {
+    proposalLatex: extractProposalLatex(result, project),
+    complianceMatrix: filledMatrix,
     evaluationReport: clean(result.evaluationReport) || '# Evaluation Report\n\nNo evaluation report returned.',
     questions: Array.isArray(result.questions) ? result.questions.map(clean).filter(Boolean).slice(0, 5) : []
   };

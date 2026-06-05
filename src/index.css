@@ -909,6 +909,11 @@ textarea:focus {
   color: #4a5c63;
   font-size: 0.9rem;
   line-height: 1.55;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  word-break: break-word;
 }
 
 .project-field-card.is-empty .project-field-summary {
@@ -939,8 +944,8 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0;
-  padding-top: 6px;
+  width: 100%;
+  padding-top: 8px;
 }
 
 .project-generate-action {
@@ -948,12 +953,12 @@ textarea:focus {
 }
 
 .project-generate-hint {
-  margin: 16px 0 0;
-  padding-top: 2px;
-  max-width: 52ch;
+  width: 100%;
+  margin: 14px 0 0;
+  padding: 0;
   color: #647177;
   font-size: 0.84rem;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 
 .artifacts-panel {
@@ -1421,10 +1426,14 @@ textarea:focus {
   line-height: 1.25;
 }
 
+.artifact-summary-item--provider .provider-display {
+  margin-top: 2px;
+}
+
 .provider-display {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
   min-width: 0;
 }
 
@@ -2164,13 +2173,34 @@ th {
 
 .explain-controls {
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
+  flex-direction: column;
+  gap: 14px;
   border: 1px solid #cbd7dc;
   border-radius: 8px;
-  padding: 14px;
+  padding: 14px 16px 16px;
   background: #ffffff;
+}
+
+.explain-action-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  padding-top: 2px;
+}
+
+.explain-action-btn {
+  min-width: min(220px, 100%);
+}
+
+.explain-action-hint {
+  margin: 0;
+  max-width: 36ch;
+  color: #647177;
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1.45;
+  text-align: center;
 }
 
 .explain-slider {
@@ -2261,22 +2291,6 @@ th {
 
 .explain-glossary strong {
   color: #28584b;
-}
-
-.explain-block.lay-abstract {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  background: #fbfdfd;
-}
-
-.explain-block.lay-abstract .primary {
-  align-self: flex-start;
-}
-
-.explain-block.lay-abstract small {
-  color: #647177;
-  font-weight: 700;
 }
 
 .spin {

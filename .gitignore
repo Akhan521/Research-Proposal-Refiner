@@ -4,3 +4,6 @@ dist/
 .env.local
 .DS_Store
 *.log
+api-proposal.tex
+debug-pdf-log.txt
+test-out.pdf
