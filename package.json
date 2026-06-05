@@ -17,6 +17,7 @@
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "lucide-react": "^1.16.0",
+    "node-latex-compiler": "^1.0.5",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "vite": "^8.0.14"

@@ -1,29 +1,12 @@
-const DEFAULT_REQUIREMENTS = `Proposal must include:
-- Project title
-- Abstract
-- Motivation and gap
-- Project goal
-- Method or agent workflow
-- Figure or diagram with caption
-- Expected results
-- Research milestones with timeline estimates
-- Evaluation plan
-- Risks and mitigation
-- Resources or budget
-- References, assumptions, or source notes`;
+import {
+  createBlankProject,
+  DEFAULT_PROJECT,
+  DEFAULT_PROJECT_TOPIC,
+  DEFAULT_REQUIREMENTS
+} from '../shared/mathlmDefaults.js';
 
-const EMPTY_PROJECT_FOR_SERVER = {
-  title: '',
-  topic: '',
-  problem: '',
-  method: '',
-  timeline: '',
-  evaluation: '',
-  resources: '',
-  references: '',
-  layAbstract: '',
-  requirements: DEFAULT_REQUIREMENTS
-};
+const EMPTY_PROJECT_FOR_SERVER = createBlankProject();
+const PROJECT_FALLBACKS = DEFAULT_PROJECT;
 
 const SYSTEM_PROMPT = `You are a research proposal agent for a CS research proposal.
 
@@ -116,7 +99,8 @@ export async function startAgentSession(payload) {
       project,
       checklist,
       activeQuestion: null,
-      answer: ''
+      answer: '',
+      llmModel: payload.llmModel
     });
 
     return {
@@ -163,7 +147,8 @@ export async function answerAgentQuestion(payload) {
       project,
       checklist,
       activeQuestion,
-      answer
+      answer,
+      llmModel: payload.llmModel
     });
 
     return {
@@ -202,18 +187,68 @@ export async function generateProposal(payload) {
   const checklist = extractChecklist(requirements);
 
   if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
-    return generateWithApi(project, checklist);
+    return generateWithApi(project, checklist, payload.llmModel);
   }
 
   return generateLocally(project, checklist);
 }
 
-async function refineProjectWithApi(payload) {
-  const model = clean(process.env.LLM_MODEL);
+export function resolveLlmModel(override) {
+  const model = clean(override) || clean(process.env.LLM_MODEL);
 
-  if (!model) {
-    throw new Error('LLM_MODEL is required when LLM_API_KEY and LLM_API_URL are configured.');
+  if (process.env.LLM_API_KEY && process.env.LLM_API_URL && !model) {
+    throw new Error('LLM_MODEL is required (set LLM_MODEL in .env or pass llmModel in the request).');
   }
+
+  return model;
+}
+
+export function getLlmPublicConfig() {
+  const configured = Boolean(process.env.LLM_API_KEY && process.env.LLM_API_URL);
+  const url = clean(process.env.LLM_API_URL);
+  let apiHost = '';
+
+  if (url) {
+    try {
+      apiHost = new URL(url).hostname.replace(/^www\./, '');
+    } catch {
+      apiHost = '';
+    }
+  }
+
+  const defaultModel = clean(process.env.LLM_MODEL);
+  const openRouter = apiHost.includes('openrouter.ai');
+  const availableModels = getConfiguredModelOptions(defaultModel);
+
+  return {
+    configured,
+    provider: configured ? getProvider() : 'local-fallback',
+    defaultModel,
+    apiHost,
+    openRouter,
+    availableModels,
+    suggestedModels: availableModels
+  };
+}
+
+function getConfiguredModelOptions(defaultModel) {
+  const allowed = clean(process.env.LLM_ALLOWED_MODELS);
+  const models = allowed
+    ? allowed
+      .split(/[,;\n]+/)
+      .map((entry) => clean(entry))
+      .filter(Boolean)
+    : [];
+
+  if (defaultModel && !models.includes(defaultModel)) {
+    models.unshift(defaultModel);
+  }
+
+  return [...new Set(models)];
+}
+
+async function refineProjectWithApi(payload) {
+  const model = resolveLlmModel(payload.llmModel);
 
   const content = await callModel({
     systemPrompt: QUESTION_SYSTEM_PROMPT,
@@ -229,7 +264,7 @@ async function refineProjectWithApi(payload) {
 
   return {
     mode: 'api',
-    provider: process.env.LLM_API_URL,
+    provider: getGenerationProviderLabel(model),
     project: nextProject,
     suggestedProject: nextProject,
     fieldSuggestions,
@@ -243,12 +278,8 @@ async function refineProjectWithApi(payload) {
   };
 }
 
-async function generateWithApi(project, checklist) {
-  const model = clean(process.env.LLM_MODEL);
-
-  if (!model) {
-    throw new Error('LLM_MODEL is required when LLM_API_KEY and LLM_API_URL are configured.');
-  }
+async function generateWithApi(project, checklist, llmModel) {
+  const model = resolveLlmModel(llmModel);
 
   const promptPayload = {
     project,
@@ -271,7 +302,7 @@ async function generateWithApi(project, checklist) {
 
   return {
     mode: 'api',
-    provider: process.env.LLM_API_URL,
+    provider: getGenerationProviderLabel(model),
     ...coerceResult(parsed, project, checklist),
     transcript: {
       prompt: promptPayload,
@@ -333,12 +364,21 @@ async function callGemini({ systemPrompt, payload, model, temperature }) {
 }
 
 async function callOpenAiCompatible({ systemPrompt, payload, model, temperature }) {
+  const headers = {
+    Authorization: `Bearer ${process.env.LLM_API_KEY}`,
+    'Content-Type': 'application/json'
+  };
+  const apiUrl = clean(process.env.LLM_API_URL).toLowerCase();
+
+  if (apiUrl.includes('openrouter.ai')) {
+    headers['HTTP-Referer'] =
+      clean(process.env.OPENROUTER_HTTP_REFERER) || 'http://127.0.0.1:5174';
+    headers['X-Title'] = clean(process.env.OPENROUTER_APP_TITLE) || 'Research Proposal Agent';
+  }
+
   const response = await fetch(process.env.LLM_API_URL, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.LLM_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
+    headers,
     body: JSON.stringify({
       model,
       temperature,
@@ -403,12 +443,12 @@ ${questions.length ? questions.map((question) => `- ${question}`).join('\n') : '
 
 function buildLocalProposalLatex(project) {
   const title = project.title || project.topic;
-  const problem = project.problem || 'The current problem is still underspecified and should be refined through clarifying questions.';
-  const method = project.method || 'The agent workflow will collect a rough research direction, ask targeted clarification questions, update project state, draft a research proposal, check requirements, and revise weak sections.';
-  const evaluation = project.evaluation || 'Evaluate the first and revised drafts against section coverage, missing fields, weak claims, prior-work comparison, research milestones, and proposal-specific success criteria.';
-  const timeline = project.timeline || 'Phase 1 literature and requirement review; Phase 2 workflow and method design; Phase 3 prototype or study setup; Phase 4 evaluation and analysis; Phase 5 final proposal revision and source notes.';
-  const resources = project.resources || 'This browser app, a local Node API service, an optional LLM API key, proposal-writing references, and source notes for unsupported claims.';
-  const references = project.references || 'Course proposal requirements and demo scaffold. Additional claims are treated as assumptions.';
+  const problem = project.problem || PROJECT_FALLBACKS.problem;
+  const method = project.method || PROJECT_FALLBACKS.method;
+  const evaluation = project.evaluation || PROJECT_FALLBACKS.evaluation;
+  const timeline = project.timeline || PROJECT_FALLBACKS.timeline;
+  const resources = project.resources || PROJECT_FALLBACKS.resources;
+  const references = project.references || PROJECT_FALLBACKS.references;
 
   return String.raw`\documentclass[11pt]{article}
 \usepackage[margin=1in]{geometry}
@@ -423,26 +463,26 @@ function buildLocalProposalLatex(project) {
 \maketitle
 
 \begin{abstract}
-This project builds a proposal agent that turns a rough research direction into a structured research proposal. The workflow collects project intent, calls an API-backed generator when configured, produces a LaTeX proposal draft, checks requirements, and lists revision questions.
+This project studies whether reinforcement learning with dense, process-based rewards and optional code verification can improve multi-step mathematical reasoning in a compact language model beyond a supervised-only baseline.
 \end{abstract}
 ${plainLanguageSummarySection(project)}
 \section{Motivation and Gap}
 ${latexParagraph(problem)}
 
-Students often have partial ideas but need help converting them into proposal sections with clear methods, milestones, and evaluation criteria. \textbf{Assumption:} a lightweight guided workflow is sufficient for a useful classroom demo.
+Compact language models still lag on multi-step grade-school math despite strong general instruction tuning. \textbf{Assumption:} dense process rewards and executable verification are necessary for stable gains at the 2B scale.
 
 \section{Project Goal}
-Create a working proposal generator that can produce a LaTeX proposal, compliance matrix, evaluation report, and follow-up questions from a rough idea.
+Show that a process-reward RL stack with curriculum learning and self-consistency can improve exact-match accuracy on math word problems relative to supervised fine-tuning alone, while remaining more stable than naive PPO training.
 
-\section{Method and Agent Workflow}
+\section{Method and Training Workflow}
 ${latexParagraph(method)}
 
 \begin{enumerate}
-\item Capture topic, problem, method, timeline, evaluation plan, resources, and requirement text.
-\item Send the structured state to the local API service.
-\item Use the configured LLM API when available; otherwise use a deterministic fallback.
-\item Return LaTeX source, requirement coverage, self-evaluation, and clarification questions.
-\item Compile \texttt{proposal.tex} into \texttt{proposal.pdf} with a LaTeX engine.
+\item Prepare a math reasoning dataset and fine-tune an open instruction-tuned model with a supervised baseline.
+\item Score rollouts with dense rewards for reasoning steps, arithmetic, and sandboxed Python verification.
+\item Optimize with GRPO (KL-penalized, multiple generations per prompt) under a difficulty curriculum.
+\item Aggregate predictions with self-consistency majority vote at inference time.
+\item Evaluate exact-match accuracy and ablate reward components.
 \end{enumerate}
 
 \section{Figure}
@@ -450,26 +490,25 @@ ${latexParagraph(method)}
 \centering
 \fbox{\begin{minipage}{0.9\linewidth}
 \centering
-Rough idea $\rightarrow$ structured suggestions $\rightarrow$ student decisions $\rightarrow$ accepted project state $\rightarrow$ LaTeX proposal $\rightarrow$ compliance review $\rightarrow$ revised PDF
+Math prompt $\rightarrow$ multi-sample rollouts $\rightarrow$ dense process + code rewards $\rightarrow$ group-relative RL update $\rightarrow$ curriculum schedule $\rightarrow$ majority-vote answer
 \end{minipage}}
-\caption{Proposed workflow for turning a rough idea into a reviewed proposal artifact.}
+\caption{Training loop: process rewards, optional code verification, curriculum, and self-consistency.}
 \end{figure}
 
 \section{Expected Results and Research Milestones}
 ${latexParagraph(timeline)}
 
-Expected result: a reproducible workflow that can start from a rough research direction and produce proposal artifacts with explicit milestones, assumptions, and review evidence.
+Expected result: a reproducible training codebase and experiment log showing which reward and curriculum choices move math reasoning accuracy from the supervised baseline toward the best RL configuration.
 
 \section{Evaluation Plan}
 ${latexParagraph(evaluation)}
 
-Test cases include a complete idea, a missing-information idea, a requirement-check case, and a revision case after weak claims are flagged.
-
 \section{Risks and Mitigation}
 \begin{itemize}
-\item API key is missing: use deterministic fallback and document that mode.
-\item Generated claims are unsupported: mark them as assumptions and ask for source notes.
-\item Research scope becomes too broad: narrow the contribution, milestones, and evaluation criteria before drafting.
+\item PPO instability or collapse: prefer GRPO updates and monitor KL drift.
+\item Reward hacking on format alone: require executable Python checks for answer verification.
+\item Curriculum too aggressive: validate per difficulty bucket before full training.
+\item Compute limits on 2B RL: checkpoint often and scope ablations.
 \end{itemize}
 
 \section{Resources}
@@ -577,64 +616,56 @@ function integrateAnswerLocally(project, answer, question) {
 }
 
 function buildFieldSuggestions(project) {
-  const topic = project.title || project.topic || 'the project';
+  const topic = project.title || project.topic || DEFAULT_PROJECT_TOPIC;
   const suggestions = [
     {
       field: 'title',
       label: 'Project Title',
-      value: project.title || titleCase(topic),
+      value: project.title || PROJECT_FALLBACKS.title || titleCase(topic),
       confidence: 'High',
-      reason: 'Use the rough idea as the working title so the proposal has a stable anchor.'
+      reason: 'Anchor the proposal to the math-reasoning RL research thread.'
     },
     {
       field: 'problem',
       label: 'Problem Framing',
-      value:
-        project.problem ||
-        `Students or project authors have a rough idea for ${topic}, but need help turning it into a structured, rubric-aligned proposal with clear scope and evaluation.`,
+      value: project.problem || PROJECT_FALLBACKS.problem,
       confidence: project.problem ? 'High' : 'Medium',
-      reason: 'A proposal needs a concrete user pain point before method details are useful.'
+      reason: 'State the accuracy gap between compact models and reliable multi-step math reasoning.'
     },
     {
       field: 'method',
-      label: 'Method / Agent Workflow',
-      value:
-        project.method ||
-        'Build an agent workflow that extracts project state from a rough idea, presents suggested fields and decision options, accepts user edits, drafts a proposal, checks requirements, and revises weak sections.',
+      label: 'Method / Training Workflow',
+      value: project.method || PROJECT_FALLBACKS.method,
       confidence: project.method ? 'High' : 'Medium',
-      reason: 'The method should describe the agent process rather than only promising a final text draft.'
+      reason: 'Describe GRPO, dense process rewards, code verification, curriculum, and self-consistency.'
     },
     {
       field: 'evaluation',
       label: 'Evaluation Plan',
-      value:
-        project.evaluation ||
-        'Test complete, missing-info, requirement-check, unsupported-claim, and revision scenarios. Compare draft quality by checklist coverage, specificity, and whether weak claims are flagged.',
+      value: project.evaluation || PROJECT_FALLBACKS.evaluation,
       confidence: project.evaluation ? 'High' : 'Medium',
-      reason: 'The course proposal needs evidence that the workflow improves the artifact.'
+      reason: 'Compare supervised, PPO-style, and process-reward RL configurations on exact-match accuracy.'
     },
     {
       field: 'timeline',
       label: 'Research Milestones',
-      value:
-        project.timeline ||
-        'Phase 1: proposal-writing research and prior-work review. Phase 2: workflow and method design. Phase 3: prototype or study setup. Phase 4: evaluation and unsupported-claim review. Phase 5: final proposal revision and source notes.',
+      value: project.timeline || PROJECT_FALLBACKS.timeline,
       confidence: project.timeline ? 'High' : 'Medium',
-      reason: 'Research milestones help reviewers judge feasibility, expected outcomes, and scope.'
+      reason: 'Show a feasible path from baseline reproduction to final ablations.'
     },
     {
       field: 'resources',
       label: 'Resources',
-      value: project.resources || 'React, Vite, Node, Gemini API, local fallback mode, sample research ideas, and course requirements.',
+      value: project.resources || PROJECT_FALLBACKS.resources,
       confidence: project.resources ? 'High' : 'Medium',
-      reason: 'Resource notes make the API-backed workflow reproducible.'
+      reason: 'List model checkpoint, dataset, GPUs, and training codebase.'
     },
     {
       field: 'references',
       label: 'Sources / Assumptions',
-      value: project.references || 'Course proposal requirements, the provided demo workflow, and explicit assumptions for unsupported claims.',
+      value: project.references || PROJECT_FALLBACKS.references,
       confidence: project.references ? 'High' : 'Medium',
-      reason: 'Source notes prevent the proposal from inventing unsupported claims.'
+      reason: 'Cite math benchmarks and RL literature; mark unsupported numeric claims as assumptions.'
     }
   ];
 
@@ -1107,6 +1138,26 @@ function getProvider() {
   }
 
   return 'openai-compatible';
+}
+
+export function getGenerationProviderLabel(modelOverride) {
+  if (!process.env.LLM_API_KEY || !process.env.LLM_API_URL) {
+    return 'local-template';
+  }
+
+  const provider = getProvider();
+  const model = clean(modelOverride) || clean(process.env.LLM_MODEL);
+  const url = clean(process.env.LLM_API_URL).toLowerCase();
+
+  if (provider === 'gemini') {
+    return model ? `gemini:${model}` : 'gemini';
+  }
+
+  if (url.includes('openrouter.ai')) {
+    return model ? `openrouter:${model}` : 'openrouter';
+  }
+
+  return model ? `api:${model}` : 'openai-compatible';
 }
 
 function titleCase(value) {

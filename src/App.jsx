@@ -1,44 +1,34 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  createBlankProject,
+  DEFAULT_PROJECT,
+  DEFAULT_PROJECT_TOPIC,
+  DEFAULT_REQUIREMENTS,
+  withDefaultProject
+} from '../shared/mathlmDefaults.js';
+import {
+  AlertCircle,
   BookOpen,
   CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ClipboardCheck,
   Download,
+  ExternalLink,
   FileText,
+  LayoutDashboard,
   ListChecks,
   Loader2,
   Play,
   RefreshCw,
   Send,
-  Sparkles
+  Sparkles,
+  X
 } from 'lucide-react';
 
-const DEFAULT_REQUIREMENTS = `Proposal must include:
-- Project title
-- Abstract
-- Motivation and gap
-- Project goal
-- Method or agent workflow
-- Figure or diagram with caption
-- Expected results
-- Research milestones with timeline estimates
-- Evaluation plan
-- Risks and mitigation
-- Resources or budget
-- References, assumptions, or source notes`;
-
-const EMPTY_PROJECT = {
-  title: '',
-  topic: '',
-  problem: '',
-  method: '',
-  timeline: '',
-  evaluation: '',
-  resources: '',
-  references: '',
-  layAbstract: '',
-  requirements: DEFAULT_REQUIREMENTS
-};
+const EMPTY_PROJECT = createBlankProject();
+const INITIAL_PROJECT = withDefaultProject();
 
 const PROJECT_FIELDS = [
   ['problem', 'Problem'],
@@ -73,37 +63,116 @@ const EXPLAIN_LEVELS = [
 ];
 
 const LITERATURE_SOURCE_OPTIONS = [
-  ['auto', 'Auto (by topic)'],
+  ['auto', 'Default (auto-pick)'],
   ['semantic_scholar', 'Semantic Scholar'],
   ['openalex', 'OpenAlex'],
   ['arxiv', 'arXiv']
 ];
 
-const MEMORY_KEY = 'proposal-agent-final-project-memory-v1';
+const LITERATURE_PAPERS_PER_PAGE = 5;
+const RUN_LOG_RECENT_COUNT = 4;
+
+const MEMORY_KEY = 'proposal-agent-final-project-memory-v2';
+const LEGACY_MEMORY_KEY = 'proposal-agent-final-project-memory-v1';
+const MODEL_DISPLAY_NAMES = {
+  'openrouter/owl-alpha': 'Owl Alpha (free)'
+};
+
+function buildLlmExtras(llmModel) {
+  const trimmed = String(llmModel || '').trim();
+  return trimmed ? { llmModel: trimmed } : {};
+}
+
+const WORKSPACE_FLOW_ORDER = ['start', 'structure', 'research', 'project', 'output'];
+
+const WORKSPACE_VIEWS = [
+  {
+    id: 'start',
+    label: 'Start',
+    icon: LayoutDashboard,
+    description: 'Enter your rough idea, save progress, and see where you are in the workflow.'
+  },
+  {
+    id: 'structure',
+    label: 'Structure',
+    icon: ListChecks,
+    description: 'Accept LLM field suggestions and resolve open decision cards.'
+  },
+  {
+    id: 'research',
+    label: 'Research',
+    icon: BookOpen,
+    description: 'Search scholarly sources and merge a relevant-information summary into Problem.'
+  },
+  {
+    id: 'project',
+    label: 'Project',
+    icon: FileText,
+    description: 'Edit accepted proposal fields and generate the draft.'
+  },
+  {
+    id: 'output',
+    label: 'Output',
+    icon: ClipboardCheck,
+    description: 'Review the run log, compliance matrix, exports, and Explain tab.'
+  }
+];
+
+function workspaceViewBadge(viewId, context) {
+  const { fieldSuggestions, acceptedSuggestionCount, decisions, literature, acceptedCount, result } = context;
+
+  switch (viewId) {
+    case 'structure':
+      if (fieldSuggestions.length) return `${acceptedSuggestionCount}/${fieldSuggestions.length}`;
+      if (decisions.length) return `${decisions.length} open`;
+      return '';
+    case 'research':
+      return literature?.papers?.length ? `${literature.papers.length} papers` : '';
+    case 'project':
+      return `${acceptedCount}/${PROJECT_FIELDS.length}`;
+    case 'output':
+      return result?.proposalLatex ? 'Draft ready' : '';
+    default:
+      return '';
+  }
+}
 
 function App() {
-  const [topicInput, setTopicInput] = useState('');
-  const [project, setProject] = useState(EMPTY_PROJECT);
+  const [topicInput, setTopicInput] = useState(DEFAULT_PROJECT_TOPIC);
+  const [project, setProject] = useState(INITIAL_PROJECT);
   const [fieldSuggestions, setFieldSuggestions] = useState([]);
   const [decisions, setDecisions] = useState([]);
   const [questions, setQuestions] = useState([]);
   const [customNote, setCustomNote] = useState('');
   const [result, setResult] = useState(null);
   const [pdfUrl, setPdfUrl] = useState('');
+  const [pdfStatus, setPdfStatus] = useState('idle');
+  const [pdfExportError, setPdfExportError] = useState('');
   const [runLog, setRunLog] = useState([]);
   const [status, setStatus] = useState('idle');
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('pdf');
+  const [activeWorkspaceView, setActiveWorkspaceView] = useState('start');
+  const [focusedProjectField, setFocusedProjectField] = useState(null);
   const [suggestionIndex, setSuggestionIndex] = useState(0);
   const [decisionIndex, setDecisionIndex] = useState(0);
   const [memorySavedAt, setMemorySavedAt] = useState('');
   const [memoryReady, setMemoryReady] = useState(false);
+  const [memoryHydrated, setMemoryHydrated] = useState(false);
   const [explain, setExplain] = useState(null);
   const [explainLevel, setExplainLevel] = useState('kid');
   const [explainStatus, setExplainStatus] = useState('idle');
   const [literature, setLiterature] = useState(null);
   const [literatureSource, setLiteratureSource] = useState('auto');
   const [literatureStatus, setLiteratureStatus] = useState('idle');
+  const [literatureNotice, setLiteratureNotice] = useState('');
+  const [lastInsertedLiteratureSummary, setLastInsertedLiteratureSummary] = useState('');
+  const [llmModel, setLlmModel] = useState('');
+  const [llmConfig, setLlmConfig] = useState(null);
+  const problemFieldRef = useRef(null);
+  const workspaceMainRef = useRef(null);
+  const lastLiteratureSummaryRef = useRef('');
+  const literatureInsertMetaRef = useRef(null);
 
   const matrixStats = useMemo(() => {
     const rows = result?.complianceMatrix || [];
@@ -111,15 +180,53 @@ function App() {
     return { covered, total: rows.length };
   }, [result]);
 
+  const generationProvider = useMemo(() => formatGenerationProvider(result), [result]);
+
   const acceptedCount = PROJECT_FIELDS.filter(([field]) => Boolean(project[field])).length;
-  const acceptedSuggestionCount = fieldSuggestions.filter((suggestion) => project[suggestion.field] === suggestion.value).length;
+  const acceptedSuggestionCount = fieldSuggestions.filter((suggestion) =>
+    isSuggestionApplied(project[suggestion.field], suggestion.value)
+  ).length;
   const currentSuggestion = fieldSuggestions[suggestionIndex] || null;
   const currentDecision = decisions[decisionIndex] || null;
   const currentQuestion = questions[0];
 
   useEffect(() => {
-    loadSavedMemory({ silent: true });
-    setMemoryReady(true);
+    let cancelled = false;
+
+    (async () => {
+      await loadSavedMemory({ silent: true });
+      if (!cancelled) {
+        setMemoryHydrated(true);
+        setMemoryReady(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch('/api/llm-config')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((config) => {
+        if (cancelled || !config) return;
+        setLlmConfig(config);
+        setLlmModel((current) => {
+          const available = getAvailableModelsFromConfig(config);
+          const trimmed = current.trim();
+          if (trimmed && available.includes(trimmed)) return trimmed;
+          if (config.defaultModel && available.includes(config.defaultModel)) return config.defaultModel;
+          return available[0] || '';
+        });
+      })
+      .catch(() => { });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -129,7 +236,13 @@ function App() {
   }, [pdfUrl]);
 
   useEffect(() => {
-    if (!memoryReady) return;
+    if (activeWorkspaceView !== 'project' && focusedProjectField) {
+      setFocusedProjectField(null);
+    }
+  }, [activeWorkspaceView, focusedProjectField]);
+
+  useEffect(() => {
+    if (!memoryReady || !memoryHydrated) return;
 
     if (!topicInput && !fieldSuggestions.length && !decisions.length && !result) {
       return;
@@ -138,6 +251,7 @@ function App() {
     saveMemory({ silent: true });
   }, [
     memoryReady,
+    memoryHydrated,
     topicInput,
     project,
     fieldSuggestions,
@@ -146,8 +260,10 @@ function App() {
     result,
     runLog,
     activeTab,
+    activeWorkspaceView,
     suggestionIndex,
-    decisionIndex
+    decisionIndex,
+    llmModel
   ]);
 
   async function startAgent() {
@@ -155,9 +271,9 @@ function App() {
   }
 
   async function startSampleAgent() {
-    const sampleTopic = 'Citation-grounded agent for literature review workflows';
-    setTopicInput(sampleTopic);
-    return startAgentForTopic(sampleTopic);
+    setTopicInput(DEFAULT_PROJECT_TOPIC);
+    setProject(withDefaultProject());
+    return startAgentForTopic(DEFAULT_PROJECT_TOPIC);
   }
 
   async function startAgentForTopic(nextTopic) {
@@ -168,10 +284,11 @@ function App() {
     try {
       const data = await postJson('/api/agent/start', {
         topic: nextTopic,
-        requirements: DEFAULT_REQUIREMENTS
+        requirements: DEFAULT_REQUIREMENTS,
+        ...buildLlmExtras(llmModel)
       });
 
-      setProject({ ...EMPTY_PROJECT, ...data.project });
+      setProject(withDefaultProject(data.project));
       setFieldSuggestions(data.fieldSuggestions || []);
       setDecisions(data.decisions || []);
       setQuestions(data.questions || []);
@@ -182,6 +299,7 @@ function App() {
         logEntry('Decide', `Review ${(data.fieldSuggestions || []).length} fields and ${(data.decisions || []).length} decision card(s).`)
       ]);
       setCustomNote('');
+      setActiveWorkspaceView('structure');
     } catch (requestError) {
       setError(readError(requestError));
     } finally {
@@ -206,10 +324,11 @@ function App() {
           priority: 'Medium'
         },
         answer: trimmed,
-        requirements: DEFAULT_REQUIREMENTS
+        requirements: DEFAULT_REQUIREMENTS,
+        ...buildLlmExtras(llmModel)
       });
 
-      setProject({ ...EMPTY_PROJECT, ...data.project });
+      setProject(withDefaultProject(data.project));
       setFieldSuggestions(data.fieldSuggestions || []);
       setDecisions(data.decisions || []);
       setQuestions(data.questions || []);
@@ -229,26 +348,52 @@ function App() {
     }
   }
 
+  async function refreshPdfPreview(proposalLatex = result?.proposalLatex) {
+    const latex = String(proposalLatex || '').trim();
+    if (!latex) return;
+
+    setPdfStatus('loading');
+    setPdfExportError('');
+
+    try {
+      const nextPdfUrl = await exportPdfUrl(latex, project.title || 'proposal');
+      updatePdfUrl(nextPdfUrl);
+      setPdfStatus('ready');
+      setActiveTab('pdf');
+    } catch (requestError) {
+      updatePdfUrl('');
+      setPdfStatus('error');
+      setPdfExportError(readError(requestError));
+      setActiveTab('latex');
+    }
+  }
+
   async function generateProposal() {
     setStatus('drafting');
     setError('');
+    setPdfExportError('');
+    setPdfStatus('idle');
+    updatePdfUrl('');
 
     try {
       const data = await postJson('/api/proposal', {
         ...project,
         topic: project.topic || project.title,
-        requirements: DEFAULT_REQUIREMENTS
+        requirements: DEFAULT_REQUIREMENTS,
+        ...buildLlmExtras(llmModel)
       });
-      const nextPdfUrl = await exportPdfUrl(data.proposalLatex, project.title || 'proposal');
 
       setResult(data);
-      updatePdfUrl(nextPdfUrl);
-      setActiveTab('pdf');
+      setActiveWorkspaceView('output');
+      setActiveTab('latex');
       setRunLog((current) => [
         ...current,
         logEntry('Draft', `Generated proposal using ${data.mode}.`),
         logEntry('Review', `Coverage ${countCovered(data.complianceMatrix)}/${data.complianceMatrix?.length || 0}.`)
       ]);
+
+      setPdfStatus('loading');
+      void refreshPdfPreview(data.proposalLatex);
     } catch (requestError) {
       setError(readError(requestError));
     } finally {
@@ -268,7 +413,8 @@ function App() {
         topic,
         problem: project.problem,
         source: literatureSource,
-        limit: 8
+        limit: 8,
+        ...buildLlmExtras(llmModel)
       });
 
       setLiterature(data);
@@ -300,16 +446,86 @@ function App() {
     setRunLog((current) => [...current, logEntry('Literature', `Added citation: ${paper.title}.`)]);
   }
 
-  function insertRelatedWork() {
-    const paragraph = literature?.relatedWorkParagraph;
-    if (!paragraph) return;
+  function insertRelatedWork(paragraph) {
+    const text = String(paragraph ?? literature?.relatedWorkParagraph ?? '').trim();
+    if (!text) {
+      setLiteratureNotice('No prior-research summary is available yet. Run a literature search first.');
+      return;
+    }
 
-    setProject((current) => ({
-      ...current,
-      problem: mergeTextField(current.problem, paragraph)
-    }));
-    clearArtifacts();
-    setRunLog((current) => [...current, logEntry('Literature', 'Inserted related-work paragraph into Problem.')]);
+    literatureInsertMetaRef.current = null;
+
+    setProject((current) => {
+      const original = normalizeProblemText(current.problem);
+      const previous = lastLiteratureSummaryRef.current;
+      const hadPreviousBlock =
+        Boolean(previous && original.includes(previous)) || hasAutoLiteratureSummary(original);
+      const nextProblem = applyLiteratureSummaryToProblem(current.problem, text, previous);
+
+      if (nextProblem === original) {
+        literatureInsertMetaRef.current = { type: 'unchanged' };
+        return current;
+      }
+
+      lastLiteratureSummaryRef.current = text;
+      literatureInsertMetaRef.current = {
+        type: 'changed',
+        replaced: hadPreviousBlock
+      };
+
+      return {
+        ...current,
+        problem: nextProblem
+      };
+    });
+
+    requestAnimationFrame(() => {
+      const meta = literatureInsertMetaRef.current;
+
+      if (meta?.type === 'changed') {
+        setLastInsertedLiteratureSummary(text);
+        setLiteratureNotice(
+          meta.replaced
+            ? 'Updated Problem statement with the latest literature summary.'
+            : 'Added to Problem statement — see the Problem field below.'
+        );
+        setRunLog((current) => [
+          ...current,
+          logEntry(
+            'Literature',
+            meta.replaced
+              ? 'Replaced prior literature summary in Problem statement.'
+              : 'Inserted relevant-papers summary into Problem statement.'
+          )
+        ]);
+      } else if (meta?.type === 'unchanged') {
+        setLiteratureNotice('Problem statement already includes the latest literature summary.');
+      }
+
+    });
+  }
+
+  function focusProblemField() {
+    setActiveWorkspaceView('project');
+    openProjectField('problem');
+  }
+
+  function openProjectField(field) {
+    setFocusedProjectField(field);
+    requestAnimationFrame(() => {
+      workspaceMainRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+    });
+  }
+
+  function closeProjectField() {
+    setFocusedProjectField(null);
+  }
+
+  function goToWorkspaceView(viewId) {
+    setActiveWorkspaceView(viewId);
+    requestAnimationFrame(() => {
+      workspaceMainRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+    });
   }
 
   async function runExplain(level) {
@@ -322,7 +538,8 @@ function App() {
       const data = await postJson('/api/explain', {
         project,
         proposalLatex: result?.proposalLatex || '',
-        level
+        level,
+        ...buildLlmExtras(llmModel)
       });
 
       setExplain(data);
@@ -363,9 +580,45 @@ function App() {
   }, [activeTab]);
 
   function acceptSuggestion(suggestion) {
-    updateProjectField(suggestion.field, suggestion.value);
+    const field = suggestion.field;
+    const incoming = String(suggestion.value || '').trim();
+    let merged = false;
+
+    setProject((current) => {
+      const existing = String(current[field] || '').trim();
+      const value =
+        !existing
+          ? incoming
+          : existing === incoming
+            ? existing
+            : mergeAcceptedFieldValue(existing, incoming);
+
+      if (value === existing) {
+        return current;
+      }
+
+      merged = true;
+      return {
+        ...current,
+        [field]: value,
+        topic: current.topic || current.title || topicInput
+      };
+    });
+
+    if (merged) {
+      clearArtifacts();
+      setRunLog((current) => [
+        ...current,
+        logEntry('Accept', `Merged ${suggestion.label || suggestion.field} into existing field content.`)
+      ]);
+    } else {
+      setRunLog((current) => [
+        ...current,
+        logEntry('Accept', `${suggestion.label || suggestion.field} text is already in the field.`)
+      ]);
+    }
+
     advanceSuggestion();
-    setRunLog((current) => [...current, logEntry('Accept', `Accepted ${suggestion.label || suggestion.field}.`)]);
   }
 
   function skipSuggestion() {
@@ -379,7 +632,34 @@ function App() {
   }
 
   function chooseOption(decision, option) {
-    updateProjectField(decision.field, option.value);
+    const field = decision.field;
+    const incoming = String(option.value || '').trim();
+    let merged = false;
+
+    setProject((current) => {
+      const existing = String(current[field] || '').trim();
+      const value =
+        !existing
+          ? incoming
+          : existing === incoming
+            ? existing
+            : mergeAcceptedFieldValue(existing, incoming);
+
+      if (value === existing) {
+        return current;
+      }
+
+      merged = true;
+      return {
+        ...current,
+        [field]: value,
+        topic: current.topic || current.title || topicInput
+      };
+    });
+
+    if (merged) {
+      clearArtifacts();
+    }
     setDecisions((current) => {
       const next = current.filter((item) => item.id !== decision.id);
       setDecisionIndex((index) => Math.min(index, Math.max(next.length - 1, 0)));
@@ -410,6 +690,8 @@ function App() {
   function clearArtifacts() {
     setResult(null);
     updatePdfUrl('');
+    setPdfStatus('idle');
+    setPdfExportError('');
     setExplain(null);
   }
 
@@ -431,12 +713,17 @@ function App() {
     setRunLog([]);
     setError('');
     setActiveTab('pdf');
+    setActiveWorkspaceView('start');
     setSuggestionIndex(0);
     setDecisionIndex(0);
     setExplain(null);
     setExplainLevel('kid');
     setLiterature(null);
     setLiteratureSource('auto');
+    setLiteratureNotice('');
+    setLastInsertedLiteratureSummary('');
+    lastLiteratureSummaryRef.current = '';
+    setFocusedProjectField(null);
   }
 
   function downloadLatex() {
@@ -482,8 +769,10 @@ function App() {
       result: compactResult(result),
       runLog,
       activeTab,
+      activeWorkspaceView,
       suggestionIndex,
-      decisionIndex
+      decisionIndex,
+      llmModel
     };
 
     localStorage.setItem(MEMORY_KEY, JSON.stringify(snapshot));
@@ -495,50 +784,101 @@ function App() {
   }
 
   async function loadSavedMemory({ silent = false } = {}) {
-    const raw = localStorage.getItem(MEMORY_KEY);
+    const raw = localStorage.getItem(MEMORY_KEY) || localStorage.getItem(LEGACY_MEMORY_KEY);
+
     if (!raw) {
       if (!silent) setError('No saved memory found.');
-      return;
+      return false;
+    }
+
+    let snapshot;
+
+    try {
+      snapshot = normalizeMemorySnapshot(JSON.parse(raw));
+    } catch {
+      localStorage.removeItem(MEMORY_KEY);
+      localStorage.removeItem(LEGACY_MEMORY_KEY);
+      setMemorySavedAt('');
+
+      if (silent) {
+        setError('');
+        return false;
+      }
+
+      setError('Saved memory was corrupted and has been cleared. Save again when you are ready.');
+      return false;
     }
 
     try {
-      const snapshot = JSON.parse(raw);
-      setTopicInput(snapshot.topicInput || '');
-      setProject({ ...EMPTY_PROJECT, ...(snapshot.project || {}) });
-      setFieldSuggestions(Array.isArray(snapshot.fieldSuggestions) ? snapshot.fieldSuggestions : []);
-      setDecisions(Array.isArray(snapshot.decisions) ? snapshot.decisions : []);
-      setQuestions(Array.isArray(snapshot.questions) ? snapshot.questions : []);
-      setResult(snapshot.result || null);
-      setRunLog(Array.isArray(snapshot.runLog) ? snapshot.runLog : []);
-      setActiveTab(snapshot.activeTab || 'pdf');
-      setSuggestionIndex(Number(snapshot.suggestionIndex || 0));
-      setDecisionIndex(Number(snapshot.decisionIndex || 0));
-      setMemorySavedAt(snapshot.savedAt || '');
+      applyMemorySnapshot(snapshot);
       setError('');
 
       if (snapshot.result?.proposalLatex) {
+        setPdfStatus('loading');
+        setPdfExportError('');
+
         try {
-          updatePdfUrl(await exportPdfUrl(snapshot.result.proposalLatex, snapshot.project?.title || 'proposal'));
-        } catch {
+          const url = await exportPdfUrl(snapshot.result.proposalLatex, snapshot.project?.title || 'proposal');
+          updatePdfUrl(url);
+          setPdfStatus('ready');
+        } catch (requestError) {
           updatePdfUrl('');
+          setPdfStatus('error');
+          setPdfExportError(readError(requestError));
         }
       } else {
         updatePdfUrl('');
+        setPdfStatus('idle');
+        setPdfExportError('');
       }
+
+      localStorage.setItem(MEMORY_KEY, JSON.stringify(snapshot));
+      localStorage.removeItem(LEGACY_MEMORY_KEY);
 
       if (!silent) {
         setRunLog((current) => [...current, logEntry('Memory', 'Reloaded saved workspace memory.')]);
       }
-    } catch {
-      setError('Saved memory is unreadable. Clear it and save again.');
+
+      return true;
+    } catch (restoreError) {
+      if (!silent) {
+        setError(`Could not restore saved memory: ${readError(restoreError)}`);
+      }
+      return false;
     }
+  }
+
+  function applyMemorySnapshot(snapshot) {
+    setTopicInput(snapshot.topicInput);
+    setProject(snapshot.project);
+    setFieldSuggestions(snapshot.fieldSuggestions);
+    setDecisions(snapshot.decisions);
+    setQuestions(snapshot.questions);
+
+    const restoredResult = snapshot.result;
+    setResult(
+      restoredResult
+        ? { ...restoredResult, provider: normalizeStoredProvider(restoredResult.provider) }
+        : null
+    );
+    setRunLog(snapshot.runLog);
+    setActiveTab(snapshot.activeTab);
+    setActiveWorkspaceView(snapshot.activeWorkspaceView);
+    setSuggestionIndex(snapshot.suggestionIndex);
+    setDecisionIndex(snapshot.decisionIndex);
+    setLlmModel(snapshot.llmModel);
+    setMemorySavedAt(snapshot.savedAt);
   }
 
   function clearSavedMemory() {
     localStorage.removeItem(MEMORY_KEY);
+    localStorage.removeItem(LEGACY_MEMORY_KEY);
     setMemorySavedAt('');
+    setError('');
   }
 
+  const currentWorkspaceView = WORKSPACE_VIEWS.find((view) => view.id === activeWorkspaceView) || WORKSPACE_VIEWS[0];
+  const hasTopicContext = Boolean(project.title || project.topic || topicInput.trim());
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -549,337 +889,427 @@ function App() {
         </span>
       </header>
 
-      <section className="workspace single-pane">
-        <section className="workflow-artifact">
-          <div className="topic-launch">
-            <label htmlFor="project-topic">
-              Rough Idea
-              <input
-                id="project-topic"
-                value={topicInput}
-                onChange={(event) => setTopicInput(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') startAgent();
-                }}
-                placeholder="Example: Agent for citation-grounded literature review"
-              />
-            </label>
-            <div className="actions framework-actions">
-              <button className="primary" disabled={!topicInput.trim() || status !== 'idle'} onClick={startAgent} type="button">
-                {status === 'starting' ? <Loader2 className="spin" size={18} aria-hidden="true" /> : <Play size={18} aria-hidden="true" />}
-                Structure Idea
-              </button>
-              <button className="secondary" disabled={status !== 'idle'} onClick={startSampleAgent} type="button">
-                <Sparkles size={18} aria-hidden="true" />
-                Sample
-              </button>
-              <button className="secondary icon-button" onClick={reset} type="button" aria-label="Reset">
-                <RefreshCw size={18} aria-hidden="true" />
-              </button>
-            </div>
-          </div>
+      <div className="workspace-layout">
+        <WorkspaceSidebar
+          activeViewId={activeWorkspaceView}
+          hasTopicContext={hasTopicContext}
+          onNavigate={goToWorkspaceView}
+          llmConfig={llmConfig}
+          llmModel={llmModel}
+          onSelectModel={setLlmModel}
+          badgeContext={{
+            fieldSuggestions,
+            acceptedSuggestionCount,
+            decisions,
+            literature,
+            acceptedCount,
+            result
+          }}
+        />
 
-          <div className="memory-bar">
+        <section className="workspace-main" ref={workspaceMainRef}>
+          <header className="view-header">
             <div>
-              <strong>Memory</strong>
-              <span>{memorySavedAt ? `Saved ${formatSavedAt(memorySavedAt)}` : 'No saved workspace yet'}</span>
+              <h2>{currentWorkspaceView.label}</h2>
+              <p className="view-description">{currentWorkspaceView.description}</p>
             </div>
-            <div className="memory-actions">
-              <button className="secondary" type="button" onClick={() => saveMemory()}>
-                Save
-              </button>
-              <button className="secondary" type="button" onClick={() => loadSavedMemory()}>
-                Reload
-              </button>
-              <button className="secondary" type="button" onClick={clearSavedMemory}>
-                Clear
-              </button>
+            {error ? <p className="error-banner view-error">{error}</p> : null}
+          </header>
+
+          {activeWorkspaceView === 'start' ? (
+            <div className="view-page view-page--start">
+              <div className="topic-launch">
+                <label htmlFor="project-topic">
+                  Rough Idea
+                  <input
+                    id="project-topic"
+                    value={topicInput}
+                    onChange={(event) => setTopicInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') startAgent();
+                    }}
+                    placeholder="Example: Process-based RL to improve math reasoning in language models"
+                  />
+                </label>
+                <div className="actions framework-actions">
+                  <button className="primary" disabled={!topicInput.trim() || status !== 'idle'} onClick={startAgent} type="button">
+                    {status === 'starting' ? <Loader2 className="spin" size={18} aria-hidden="true" /> : <Play size={18} aria-hidden="true" />}
+                    Structure Idea
+                  </button>
+                  <button className="secondary" disabled={status !== 'idle'} onClick={startSampleAgent} type="button">
+                    <Sparkles size={18} aria-hidden="true" />
+                    Sample
+                  </button>
+                  <button className="secondary icon-button" onClick={reset} type="button" aria-label="Reset">
+                    <RefreshCw size={18} aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="memory-bar">
+                <div>
+                  <strong>Memory</strong>
+                  <span>{memorySavedAt ? `Saved ${formatSavedAt(memorySavedAt)}` : 'No saved workspace yet'}</span>
+                </div>
+                <div className="memory-actions">
+                  <button className="secondary" type="button" onClick={() => saveMemory()}>
+                    Save
+                  </button>
+                  <button className="secondary" type="button" onClick={() => loadSavedMemory()}>
+                    Reload
+                  </button>
+                  <button className="secondary" type="button" onClick={clearSavedMemory}>
+                    Clear
+                  </button>
+                </div>
+              </div>
+
+              <div className="workflow-grid" aria-label="Workflow stages">
+                {STAGES.map(([number, title, description], index) => (
+                  <article className="stage-card" key={title}>
+                    <div className="stage-topline">
+                      <span className="stage-number">{number}</span>
+                      <span className={`stage-status ${stageStatus(index, fieldSuggestions, decisions, project, result)}`}>
+                        {stageLabel(index, fieldSuggestions, decisions, project, result)}
+                      </span>
+                    </div>
+                    <h3>{title}</h3>
+                    <p>{description}</p>
+                  </article>
+                ))}
+              </div>
+
             </div>
-          </div>
+          ) : null}
 
-          {error ? <p className="error-banner">{error}</p> : null}
+          {activeWorkspaceView === 'structure' ? (
+            <div className="view-page view-page--structure">
+              <div className="structure-layout">
+                <section className="workspace-panel suggestions-panel">
+                  <PanelHeader title="LLM Suggested Structure" meta={`${fieldSuggestions.length} fields`} />
+                  {fieldSuggestions.length ? (
+                    <div className="suggestion-deck">
+                      <div className="deck-progress">
+                        <span>{Math.min(suggestionIndex + 1, fieldSuggestions.length)} / {fieldSuggestions.length}</span>
+                        <strong>{acceptedSuggestionCount} accepted</strong>
+                      </div>
+                      {currentSuggestion ? (
+                        <article className="suggestion-card active-card" key={`${currentSuggestion.field}-${currentSuggestion.value}`}>
+                          <div className="card-line">
+                            <h3>{currentSuggestion.label || labelForField(currentSuggestion.field)}</h3>
+                            <span className={`priority ${String(currentSuggestion.confidence || 'medium').toLowerCase()}`}>
+                              {currentSuggestion.confidence || 'Medium'}
+                            </span>
+                          </div>
+                          <p>{currentSuggestion.value}</p>
+                          <small>{currentSuggestion.reason}</small>
+                          <div className="deck-actions">
+                            <button
+                              className={
+                                isSuggestionApplied(project[currentSuggestion.field], currentSuggestion.value)
+                                  ? 'secondary accepted'
+                                  : 'primary'
+                              }
+                              type="button"
+                              onClick={() => acceptSuggestion(currentSuggestion)}
+                            >
+                              <CheckCircle2 size={16} aria-hidden="true" />
+                              {isSuggestionApplied(project[currentSuggestion.field], currentSuggestion.value)
+                                ? 'Accepted'
+                                : 'Accept and Next'}
+                            </button>
+                            <button className="secondary" type="button" onClick={skipSuggestion}>
+                              Skip
+                            </button>
+                          </div>
+                        </article>
+                      ) : null}
+                      <div className="deck-nav">
+                        <button
+                          className="secondary"
+                          type="button"
+                          disabled={suggestionIndex === 0}
+                          onClick={() => setSuggestionIndex((current) => Math.max(current - 1, 0))}
+                        >
+                          Previous
+                        </button>
+                        <button
+                          className="secondary"
+                          type="button"
+                          disabled={suggestionIndex >= fieldSuggestions.length - 1}
+                          onClick={() => setSuggestionIndex((current) => Math.min(current + 1, fieldSuggestions.length - 1))}
+                        >
+                          Next
+                        </button>
+                      </div>
+                      <div className="deck-strip" aria-label="Suggestion progress">
+                        {fieldSuggestions.map((suggestion, index) => (
+                          <button
+                            key={`${suggestion.field}-${index}`}
+                            className={[
+                              'deck-dot',
+                              index === suggestionIndex ? 'current' : '',
+                              isSuggestionApplied(project[suggestion.field], suggestion.value) ? 'done' : ''
+                            ].join(' ')}
+                            type="button"
+                            aria-label={`Open ${suggestion.label || labelForField(suggestion.field)}`}
+                            onClick={() => setSuggestionIndex(index)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <EmptyState text="Enter a rough idea, then let the model structure it." compact />
+                  )}
+                </section>
 
-          {(project.title || project.topic || topicInput.trim()) ? (
-            <LiteraturePanel
-              literature={literature}
-              source={literatureSource}
-              status={literatureStatus}
-              references={project.references}
-              onSourceChange={setLiteratureSource}
-              onSearch={searchLiterature}
-              onAddPaper={addPaperToReferences}
-              onInsertRelatedWork={insertRelatedWork}
+                <section className="workspace-panel decisions-panel">
+                  <PanelHeader title="Decision Needed" meta={`${decisions.length} open`} />
+                  {decisions.length ? (
+                    <div className="decision-deck">
+                      <div className="deck-progress">
+                        <span>{Math.min(decisionIndex + 1, decisions.length)} / {decisions.length}</span>
+                        <strong>{decisions.length} open</strong>
+                      </div>
+                      {currentDecision ? (
+                        <article className="decision-card active-card" key={currentDecision.id}>
+                          <h3>{currentDecision.title}</h3>
+                          <p>{currentDecision.question}</p>
+                          <div className="option-stack">
+                            {currentDecision.options.map((option) => (
+                              <button
+                                className="option-button"
+                                key={`${currentDecision.id}-${option.label}`}
+                                type="button"
+                                onClick={() => chooseOption(currentDecision, option)}
+                              >
+                                <strong>{option.label}</strong>
+                                <span>{option.value}</span>
+                                <small>{option.rationale}</small>
+                              </button>
+                            ))}
+                          </div>
+                          <div className="deck-actions">
+                            <button className="secondary" type="button" onClick={skipDecision}>
+                              Skip
+                            </button>
+                          </div>
+                        </article>
+                      ) : null}
+                      <div className="deck-nav">
+                        <button
+                          className="secondary"
+                          type="button"
+                          disabled={decisionIndex === 0}
+                          onClick={() => setDecisionIndex((current) => Math.max(current - 1, 0))}
+                        >
+                          Previous
+                        </button>
+                        <button
+                          className="secondary"
+                          type="button"
+                          disabled={decisionIndex >= decisions.length - 1}
+                          onClick={() => setDecisionIndex((current) => Math.min(current + 1, decisions.length - 1))}
+                        >
+                          Next
+                        </button>
+                      </div>
+                      <div className="deck-strip" aria-label="Decision progress">
+                        {decisions.map((decision, index) => (
+                          <button
+                            key={`${decision.id}-${index}`}
+                            className={['deck-dot', index === decisionIndex ? 'current' : ''].join(' ')}
+                            type="button"
+                            aria-label={`Open ${decision.title}`}
+                            onClick={() => setDecisionIndex(index)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <EmptyState text="No major decision is open. Review the accepted state or draft the proposal." compact />
+                  )}
+
+                  <section className="custom-note">
+                    <h3>Extra Note</h3>
+                    <textarea
+                      value={customNote}
+                      onChange={(event) => setCustomNote(event.target.value)}
+                      placeholder={currentQuestion?.question || 'Add a detail the options missed.'}
+                    />
+                    <button className="primary" disabled={!customNote.trim() || status !== 'idle'} onClick={submitCustomNote} type="button">
+                      {status === 'answering' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Send size={16} aria-hidden="true" />}
+                      Let LLM Integrate
+                    </button>
+                  </section>
+                </section>
+              </div>
+
+            </div>
+          ) : null}
+
+          {activeWorkspaceView === 'research' ? (
+            <div className="view-page view-page--research">
+              {hasTopicContext ? (
+                <LiteraturePanel
+                  literature={literature}
+                  source={literatureSource}
+                  status={literatureStatus}
+                  references={project.references}
+                  problemText={project.problem}
+                  lastInsertedSummary={lastInsertedLiteratureSummary}
+                  insertNotice={literatureNotice}
+                  onSourceChange={setLiteratureSource}
+                  onSearch={() => {
+                    setLiteratureNotice('');
+                    searchLiterature();
+                  }}
+                  onAddPaper={addPaperToReferences}
+                  onInsertRelatedWork={insertRelatedWork}
+                  onFocusProblem={focusProblemField}
+                />
+              ) : (
+                <EmptyState text="Enter a rough idea on Start, then return here to search papers." />
+              )}
+            </div>
+          ) : null}
+
+          {activeWorkspaceView === 'project' ? (
+            <div className="view-page view-page--project">
+              <section className="workspace-panel state-panel project-fields-panel">
+                <PanelHeader title="Accepted Project State" meta={`${acceptedCount}/${PROJECT_FIELDS.length} ready`} />
+                <p className="project-fields-hint">
+                  Title stays visible below. Click any section card to open a full-screen editor for that field.
+                </p>
+                <label className="project-title-field">
+                  Project Title
+                  <input value={project.title} onChange={(event) => updateProjectField('title', event.target.value)} />
+                </label>
+                <div className="project-field-cards">
+                  {PROJECT_FIELDS.map(([field, label]) => (
+                    <ProjectFieldCard
+                      key={field}
+                      label={label}
+                      value={project[field] || ''}
+                      isOpen={focusedProjectField === field}
+                      onOpen={() => openProjectField(field)}
+                    />
+                  ))}
+                </div>
+                <div className="project-generate-row">
+                  <div className="project-generate-action">
+                    <button className="primary" disabled={!project.title || status !== 'idle'} onClick={generateProposal} type="button">
+                      {status === 'drafting' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}
+                      {status === 'drafting' ? 'Generating draft…' : 'Generate Proposal'}
+                    </button>
+                  </div>
+                  {status === 'drafting' ? (
+                    <p className="project-generate-hint" role="status">
+                      Owl Alpha and similar models often need 1–2 minutes for a full LaTeX draft. You will move to Output when the text is ready; PDF preview compiles afterward.
+                    </p>
+                  ) : null}
+                </div>
+              </section>
+            </div>
+          ) : null}
+
+          {activeWorkspaceView === 'project' && focusedProjectField ? (
+            <ProjectFieldEditor
+              field={focusedProjectField}
+              label={labelForField(focusedProjectField)}
+              value={project[focusedProjectField] || ''}
+              onChange={(value) => updateProjectField(focusedProjectField, value)}
+              onClose={closeProjectField}
+              inputRef={focusedProjectField === 'problem' ? problemFieldRef : undefined}
             />
           ) : null}
 
-          <div className="workflow-grid" aria-label="Workflow stages">
-            {STAGES.map(([number, title, description], index) => (
-              <article className="stage-card" key={title}>
-                <div className="stage-topline">
-                  <span className="stage-number">{number}</span>
-                  <span className={`stage-status ${stageStatus(index, fieldSuggestions, decisions, project, result)}`}>
-                    {stageLabel(index, fieldSuggestions, decisions, project, result)}
-                  </span>
-                </div>
-                <h3>{title}</h3>
-                <p>{description}</p>
-              </article>
-            ))}
-          </div>
+          {activeWorkspaceView === 'output' ? (
+            <div className="view-page view-page--output">
+              <div className="workflow-columns">
+                <RunLogPanel entries={runLog} />
 
-          <div className="workspace-grid">
-            <section className="workspace-panel suggestions-panel">
-              <PanelHeader title="LLM Suggested Structure" meta={`${fieldSuggestions.length} fields`} />
-              {fieldSuggestions.length ? (
-                <div className="suggestion-deck">
-                  <div className="deck-progress">
-                    <span>{Math.min(suggestionIndex + 1, fieldSuggestions.length)} / {fieldSuggestions.length}</span>
-                    <strong>{acceptedSuggestionCount} accepted</strong>
-                  </div>
-                  {currentSuggestion ? (
-                    <article className="suggestion-card active-card" key={`${currentSuggestion.field}-${currentSuggestion.value}`}>
-                      <div className="card-line">
-                        <h3>{currentSuggestion.label || labelForField(currentSuggestion.field)}</h3>
-                        <span className={`priority ${String(currentSuggestion.confidence || 'medium').toLowerCase()}`}>
-                          {currentSuggestion.confidence || 'Medium'}
-                        </span>
-                      </div>
-                      <p>{currentSuggestion.value}</p>
-                      <small>{currentSuggestion.reason}</small>
-                      <div className="deck-actions">
+                <section className="workflow-panel artifacts-panel">
+                  <div className="artifact-toolbar">
+                    <nav className="tabs" aria-label="Generated artifacts">
+                      {TABS.map(([id, Icon, label]) => (
                         <button
-                          className={project[currentSuggestion.field] === currentSuggestion.value ? 'secondary accepted' : 'primary'}
+                          key={id}
+                          className={activeTab === id ? 'tab active' : 'tab'}
                           type="button"
-                          onClick={() => acceptSuggestion(currentSuggestion)}
+                          onClick={() => setActiveTab(id)}
                         >
-                          <CheckCircle2 size={16} aria-hidden="true" />
-                          {project[currentSuggestion.field] === currentSuggestion.value ? 'Accepted' : 'Accept and Next'}
+                          <Icon size={17} aria-hidden="true" />
+                          {label}
                         </button>
-                        <button className="secondary" type="button" onClick={skipSuggestion}>
-                          Skip
-                        </button>
-                      </div>
-                    </article>
+                      ))}
+                    </nav>
+                    <button className="secondary" type="button" disabled={!result?.proposalLatex} onClick={downloadLatex}>
+                      <Download size={17} aria-hidden="true" />
+                      LaTeX
+                    </button>
+                    <button
+                      className="primary"
+                      type="button"
+                      disabled={!result?.proposalLatex || status !== 'idle'}
+                      onClick={downloadPdf}
+                    >
+                      {status === 'exporting' ? <Loader2 className="spin" size={17} aria-hidden="true" /> : <Download size={17} aria-hidden="true" />}
+                      PDF
+                    </button>
+                  </div>
+
+                  <div className="artifact-summary">
+                    <div>
+                      <span>Coverage</span>
+                      <strong>{matrixStats.total ? `${matrixStats.covered}/${matrixStats.total}` : '0/0'}</strong>
+                    </div>
+                    <div>
+                      <span>Accepted</span>
+                      <strong>{acceptedCount}/{PROJECT_FIELDS.length}</strong>
+                    </div>
+                    <div className="artifact-summary-item artifact-summary-item--provider">
+                      <span>Provider</span>
+                      <strong>{generationProvider.label}</strong>
+                      {generationProvider.meta ? <small>{generationProvider.meta}</small> : null}
+                    </div>
+                  </div>
+
+                  {pdfExportError && pdfStatus !== 'ready' && result?.proposalLatex ? (
+                    <p className="artifact-pdf-notice" role="status">
+                      {pdfExportError}
+                    </p>
                   ) : null}
-                  <div className="deck-nav">
-                    <button
-                      className="secondary"
-                      type="button"
-                      disabled={suggestionIndex === 0}
-                      onClick={() => setSuggestionIndex((current) => Math.max(current - 1, 0))}
-                    >
-                      Previous
-                    </button>
-                    <button
-                      className="secondary"
-                      type="button"
-                      disabled={suggestionIndex >= fieldSuggestions.length - 1}
-                      onClick={() => setSuggestionIndex((current) => Math.min(current + 1, fieldSuggestions.length - 1))}
-                    >
-                      Next
-                    </button>
-                  </div>
-                  <div className="deck-strip" aria-label="Suggestion progress">
-                    {fieldSuggestions.map((suggestion, index) => (
-                      <button
-                        key={`${suggestion.field}-${index}`}
-                        className={[
-                          'deck-dot',
-                          index === suggestionIndex ? 'current' : '',
-                          project[suggestion.field] === suggestion.value ? 'done' : ''
-                        ].join(' ')}
-                        type="button"
-                        aria-label={`Open ${suggestion.label || labelForField(suggestion.field)}`}
-                        onClick={() => setSuggestionIndex(index)}
+
+                  <div className="artifact-content">
+                    {activeTab === 'explain' ? (
+                      <ExplainPanel
+                        explain={explain}
+                        level={explainLevel}
+                        status={explainStatus}
+                        hasProposal={Boolean(result?.proposalLatex)}
+                        layAbstractInserted={Boolean(project.layAbstract) && project.layAbstract === explain?.layAbstract}
+                        onChangeLevel={changeExplainLevel}
+                        onRefresh={() => runExplain(explainLevel)}
+                        onInsertLayAbstract={insertLayAbstract}
                       />
-                    ))}
+                    ) : (
+                      renderArtifact(activeTab, result, {
+                        pdfUrl,
+                        pdfStatus,
+                        pdfExportError,
+                        onRetryPdf: () => refreshPdfPreview(),
+                        onViewLatex: () => setActiveTab('latex')
+                      })
+                    )}
                   </div>
-                </div>
-              ) : (
-                <EmptyState text="Enter a rough idea, then let the model structure it." compact />
-              )}
-            </section>
-
-            <section className="workspace-panel decisions-panel">
-              <PanelHeader title="Decision Needed" meta={`${decisions.length} open`} />
-              {decisions.length ? (
-                <div className="decision-deck">
-                  <div className="deck-progress">
-                    <span>{Math.min(decisionIndex + 1, decisions.length)} / {decisions.length}</span>
-                    <strong>{decisions.length} open</strong>
-                  </div>
-                  {currentDecision ? (
-                    <article className="decision-card active-card" key={currentDecision.id}>
-                      <h3>{currentDecision.title}</h3>
-                      <p>{currentDecision.question}</p>
-                      <div className="option-stack">
-                        {currentDecision.options.map((option) => (
-                          <button
-                            className="option-button"
-                            key={`${currentDecision.id}-${option.label}`}
-                            type="button"
-                            onClick={() => chooseOption(currentDecision, option)}
-                          >
-                            <strong>{option.label}</strong>
-                            <span>{option.value}</span>
-                            <small>{option.rationale}</small>
-                          </button>
-                        ))}
-                      </div>
-                      <div className="deck-actions">
-                        <button className="secondary" type="button" onClick={skipDecision}>
-                          Skip
-                        </button>
-                      </div>
-                    </article>
-                  ) : null}
-                  <div className="deck-nav">
-                    <button
-                      className="secondary"
-                      type="button"
-                      disabled={decisionIndex === 0}
-                      onClick={() => setDecisionIndex((current) => Math.max(current - 1, 0))}
-                    >
-                      Previous
-                    </button>
-                    <button
-                      className="secondary"
-                      type="button"
-                      disabled={decisionIndex >= decisions.length - 1}
-                      onClick={() => setDecisionIndex((current) => Math.min(current + 1, decisions.length - 1))}
-                    >
-                      Next
-                    </button>
-                  </div>
-                  <div className="deck-strip" aria-label="Decision progress">
-                    {decisions.map((decision, index) => (
-                      <button
-                        key={`${decision.id}-${index}`}
-                        className={['deck-dot', index === decisionIndex ? 'current' : ''].join(' ')}
-                        type="button"
-                        aria-label={`Open ${decision.title}`}
-                        onClick={() => setDecisionIndex(index)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <EmptyState text="No major decision is open. Review the accepted state or draft the proposal." compact />
-              )}
-
-              <section className="custom-note">
-                <h3>Extra Note</h3>
-                <textarea
-                  value={customNote}
-                  onChange={(event) => setCustomNote(event.target.value)}
-                  placeholder={currentQuestion?.question || 'Add a detail the options missed.'}
-                />
-                <button className="primary" disabled={!customNote.trim() || status !== 'idle'} onClick={submitCustomNote} type="button">
-                  {status === 'answering' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Send size={16} aria-hidden="true" />}
-                  Let LLM Integrate
-                </button>
-              </section>
-            </section>
-
-            <section className="workspace-panel state-panel">
-              <PanelHeader title="Accepted Project State" meta={`${acceptedCount}/${PROJECT_FIELDS.length} ready`} />
-              <label>
-                Project Title
-                <input value={project.title} onChange={(event) => updateProjectField('title', event.target.value)} />
-              </label>
-              {PROJECT_FIELDS.map(([field, label]) => (
-                <label key={field}>
-                  {label}
-                  <textarea value={project[field] || ''} onChange={(event) => updateProjectField(field, event.target.value)} />
-                </label>
-              ))}
-              <button className="primary" disabled={!project.title || status !== 'idle'} onClick={generateProposal} type="button">
-                {status === 'drafting' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}
-                Generate Proposal
-              </button>
-            </section>
-          </div>
-
-          <div className="workflow-columns">
-            <section className="workflow-panel">
-              <h2>Run Log</h2>
-              {runLog.length ? (
-                <ol className="run-log">
-                  {runLog.map((entry) => (
-                    <li key={entry.id}>
-                      <span>{entry.stage}</span>
-                      <p>{entry.message}</p>
-                    </li>
-                  ))}
-                </ol>
-              ) : (
-                <EmptyState text="Run log appears after the idea is structured." compact />
-              )}
-            </section>
-
-            <section className="workflow-panel artifacts-panel">
-              <div className="artifact-toolbar">
-                <nav className="tabs" aria-label="Generated artifacts">
-                  {TABS.map(([id, Icon, label]) => (
-                    <button
-                      key={id}
-                      className={activeTab === id ? 'tab active' : 'tab'}
-                      type="button"
-                      onClick={() => setActiveTab(id)}
-                    >
-                      <Icon size={17} aria-hidden="true" />
-                      {label}
-                    </button>
-                  ))}
-                </nav>
-                <button className="secondary" type="button" disabled={!result?.proposalLatex} onClick={downloadLatex}>
-                  <Download size={17} aria-hidden="true" />
-                  LaTeX
-                </button>
-                <button
-                  className="primary"
-                  type="button"
-                  disabled={!result?.proposalLatex || status !== 'idle'}
-                  onClick={downloadPdf}
-                >
-                  {status === 'exporting' ? <Loader2 className="spin" size={17} aria-hidden="true" /> : <Download size={17} aria-hidden="true" />}
-                  PDF
-                </button>
+                </section>
               </div>
+            </div>
+          ) : null}
 
-              <div className="artifact-summary">
-                <div>
-                  <span>Coverage</span>
-                  <strong>{matrixStats.total ? `${matrixStats.covered}/${matrixStats.total}` : '0/0'}</strong>
-                </div>
-                <div>
-                  <span>Accepted</span>
-                  <strong>{acceptedCount}/{PROJECT_FIELDS.length}</strong>
-                </div>
-                <div>
-                  <span>Provider</span>
-                  <strong>{result?.provider || 'waiting'}</strong>
-                </div>
-              </div>
-
-              {activeTab === 'explain' ? (
-                <ExplainPanel
-                  explain={explain}
-                  level={explainLevel}
-                  status={explainStatus}
-                  hasProposal={Boolean(result?.proposalLatex)}
-                  layAbstractInserted={Boolean(project.layAbstract) && project.layAbstract === explain?.layAbstract}
-                  onChangeLevel={changeExplainLevel}
-                  onRefresh={() => runExplain(explainLevel)}
-                  onInsertLayAbstract={insertLayAbstract}
-                />
-              ) : (
-                renderArtifact(activeTab, result, pdfUrl)
-              )}
-            </section>
-          </div>
         </section>
-      </section>
+      </div>
     </main>
   );
 }
@@ -918,16 +1348,44 @@ async function exportPdfUrl(proposalLatex, title) {
   return URL.createObjectURL(blob);
 }
 
-function renderArtifact(activeTab, result, pdfUrl) {
+function renderArtifact(activeTab, result, { pdfUrl, pdfStatus, pdfExportError, onRetryPdf, onViewLatex }) {
   if (!result) {
     return <EmptyState text="Proposal artifacts appear after Generate Proposal." />;
   }
 
   if (activeTab === 'pdf') {
+    if (pdfStatus === 'loading') {
+      return (
+        <div className="artifact-status-card">
+          <Loader2 className="spin" size={22} aria-hidden="true" />
+          <p>Compiling PDF preview…</p>
+          <small>LaTeX is already available in the LaTeX tab while this runs.</small>
+        </div>
+      );
+    }
+
+    if (pdfStatus === 'error') {
+      return (
+        <div className="artifact-status-card artifact-status-card--error">
+          <AlertCircle size={22} aria-hidden="true" />
+          <p>PDF preview could not be built.</p>
+          <small>{pdfExportError}</small>
+          <div className="artifact-status-actions">
+            <button className="secondary" type="button" onClick={onRetryPdf}>
+              Retry PDF
+            </button>
+            <button className="primary" type="button" onClick={onViewLatex}>
+              View LaTeX
+            </button>
+          </div>
+        </div>
+      );
+    }
+
     return pdfUrl ? (
       <iframe className="pdf-preview" src={pdfUrl} title="Compiled proposal PDF" />
     ) : (
-      <EmptyState text="PDF preview is rendering." />
+      <EmptyState text="PDF preview is not ready yet. Open the LaTeX tab or retry PDF." />
     );
   }
 
@@ -1073,24 +1531,51 @@ function LiteraturePanel({
   source,
   status,
   references,
+  problemText,
+  lastInsertedSummary,
+  insertNotice,
   onSourceChange,
   onSearch,
   onAddPaper,
-  onInsertRelatedWork
+  onInsertRelatedWork,
+  onFocusProblem
 }) {
-  const resolvedLabel =
-    LITERATURE_SOURCE_OPTIONS.find(([id]) => id === literature?.resolvedSource)?.[1] ||
-    literature?.resolvedSource ||
-    '';
+  const [expandedId, setExpandedId] = useState(null);
+  const [paperPage, setPaperPage] = useState(0);
+  const view = getLiteratureView(literature, status);
+  const papers = literature?.papers ?? [];
+  const totalPaperPages = Math.max(1, Math.ceil(papers.length / LITERATURE_PAPERS_PER_PAGE));
+  const safePaperPage = Math.min(paperPage, totalPaperPages - 1);
+  const pageStart = safePaperPage * LITERATURE_PAPERS_PER_PAGE;
+  const visiblePapers = papers.slice(pageStart, pageStart + LITERATURE_PAPERS_PER_PAGE);
+  const summaryText = literature?.relatedWorkParagraph?.trim() || '';
+  const normalizedProblem = normalizeProblemText(problemText);
+  const summaryUpToDate = Boolean(summaryText && normalizedProblem.includes(summaryText));
+  const hasStaleLiterature =
+    Boolean(summaryText && !summaryUpToDate) &&
+    (hasAutoLiteratureSummary(normalizedProblem) ||
+      Boolean(lastInsertedSummary && normalizedProblem.includes(lastInsertedSummary.trim())));
+
+  useEffect(() => {
+    if (status === 'loading') {
+      setExpandedId(null);
+      setPaperPage(0);
+    }
+  }, [status]);
+
+  useEffect(() => {
+    setPaperPage(0);
+    setExpandedId(null);
+  }, [literature]);
 
   return (
     <section className="literature-panel">
       <div className="panel-header">
         <h2>
           <BookOpen size={18} aria-hidden="true" />
-          Literature Retriever
+          Literature
         </h2>
-        <span>{literature?.papers?.length ? `${literature.papers.length} papers` : 'Not searched yet'}</span>
+        <span className={`literature-status ${view.statusClass}`}>{view.statusLabel}</span>
       </div>
 
       <div className="literature-controls">
@@ -1106,76 +1591,423 @@ function LiteraturePanel({
         </label>
         <button className="primary" type="button" onClick={onSearch} disabled={status === 'loading'}>
           {status === 'loading' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <BookOpen size={16} aria-hidden="true" />}
-          Find Literature
+          Search
         </button>
       </div>
 
-      {literature?.resolvedSource && source === 'auto' ? (
-        <p className="literature-meta">
-          Auto picked <strong>{resolvedLabel}</strong> for this topic.
-        </p>
-      ) : null}
-
-      {literature?.resolvedSource && source !== 'auto' && literature.resolvedSource !== source ? (
-        <p className="literature-meta">
-          <strong>{LITERATURE_SOURCE_OPTIONS.find(([id]) => id === source)?.[1]}</strong> was unavailable; results came from{' '}
-          <strong>{resolvedLabel}</strong>.
-        </p>
-      ) : null}
-
-      {status === 'loading' && !literature?.papers?.length ? (
-        <EmptyState text="Searching scholarly APIs for relevant papers." compact />
-      ) : null}
-
-      {literature?.relatedWorkParagraph ? (
-        <div className="literature-block">
-          <h3>Related work (draft)</h3>
-          <p>{literature.relatedWorkParagraph}</p>
-          {literature.gapNote ? <small>{literature.gapNote}</small> : null}
-          <button className="secondary" type="button" onClick={onInsertRelatedWork}>
-            Insert into Problem
-          </button>
+      {view.fallbackNotice ? (
+        <div className="literature-fallback-banner" role="status">
+          <AlertCircle size={18} aria-hidden="true" />
+          <p>{view.fallbackNotice}</p>
         </div>
       ) : null}
 
-      {literature?.papers?.length ? (
-        <div className="literature-results">
-          {literature.papers.map((paper) => {
-            const added = String(references || '').includes(paper.citation);
+      {view.hint && !view.fallbackNotice ? <p className="literature-hint">{view.hint}</p> : null}
 
-            return (
-              <article className="literature-card" key={paper.id}>
-                <div className="card-line">
-                  <h3>{paper.title}</h3>
-                  <span className="literature-badge">{paper.source}</span>
+      <div className="literature-body">
+        {view.kind === 'loading' ? (
+          <div className="literature-loading">
+            <Loader2 className="spin" size={22} aria-hidden="true" />
+            <p>Searching scholarly databases…</p>
+          </div>
+        ) : null}
+
+        {view.kind === 'error' ? (
+          <div className="literature-alert" role="alert">
+            <AlertCircle size={20} aria-hidden="true" />
+            <div>
+              <strong>{view.title}</strong>
+              {view.errors.length ? (
+                <ul>
+                  {view.errors.map((item) => (
+                    <li key={item.id}>
+                      <span>{item.source}</span> — {item.message}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p>{view.summary}</p>
+              )}
+              <p className="literature-alert-tip">{view.tip}</p>
+            </div>
+          </div>
+        ) : null}
+
+        {view.kind === 'success' ? (
+          <>
+            <section className="literature-papers-section" aria-label="Retrieved papers">
+              <div className="literature-section-header literature-section-header--stacked">
+                <div className="literature-section-title-row">
+                  <h3>Retrieved papers</h3>
+                  {papers.length > LITERATURE_PAPERS_PER_PAGE ? (
+                    <span className="literature-page-label">
+                      {pageStart + 1}–{Math.min(pageStart + LITERATURE_PAPERS_PER_PAGE, papers.length)} of {papers.length}
+                    </span>
+                  ) : (
+                    <span className="literature-page-label">{papers.length} total</span>
+                  )}
                 </div>
-                <p className="literature-authors">
-                  {paper.authors?.length ? paper.authors.join(', ') : 'Unknown authors'}
-                  {paper.year ? ` · ${paper.year}` : ''}
-                  {paper.citationCount ? ` · ${paper.citationCount} citations` : ''}
+                <p className="literature-section-desc">
+                  {view.rankingHint || 'Click a paper to read more, then add citations to your Sources.'}
                 </p>
-                {paper.abstract ? <p className="literature-abstract">{paper.abstract}</p> : null}
-                {paper.relevanceNote ? <small>{paper.relevanceNote}</small> : null}
-                <div className="literature-card-actions">
-                  <button className={added ? 'secondary accepted' : 'primary'} type="button" onClick={() => onAddPaper(paper)} disabled={added}>
-                    <CheckCircle2 size={16} aria-hidden="true" />
-                    {added ? 'In references' : 'Add to references'}
+              </div>
+
+              <div className="literature-results">
+                {visiblePapers.map((paper, index) => (
+                  <LiteraturePaperCard
+                    key={paper.id}
+                    rank={pageStart + index + 1}
+                    paper={paper}
+                    expanded={expandedId === paper.id}
+                    added={String(references || '').includes(paper.citation)}
+                    onToggle={() => setExpandedId((current) => (current === paper.id ? null : paper.id))}
+                    onAdd={() => onAddPaper(paper)}
+                  />
+                ))}
+              </div>
+
+              {papers.length > LITERATURE_PAPERS_PER_PAGE ? (
+                <div className="literature-pager">
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={safePaperPage === 0}
+                    onClick={() => {
+                      setPaperPage((current) => Math.max(current - 1, 0));
+                      setExpandedId(null);
+                    }}
+                  >
+                    <ChevronLeft size={16} aria-hidden="true" />
+                    Previous
                   </button>
-                  {paper.url ? (
-                    <a className="secondary literature-link" href={paper.url} target="_blank" rel="noreferrer">
-                      Open paper
-                    </a>
-                  ) : null}
+                  <span>
+                    Page {safePaperPage + 1} of {totalPaperPages}
+                  </span>
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={safePaperPage >= totalPaperPages - 1}
+                    onClick={() => {
+                      setPaperPage((current) => Math.min(current + 1, totalPaperPages - 1));
+                      setExpandedId(null);
+                    }}
+                  >
+                    Next
+                    <ChevronRight size={16} aria-hidden="true" />
+                  </button>
                 </div>
-              </article>
-            );
-          })}
-        </div>
-      ) : literature && !literature.papers?.length ? (
-        <EmptyState text="No papers found. Try another source or refine your topic." compact />
-      ) : null}
+              ) : null}
+            </section>
+
+            {literature.relatedWorkParagraph ? (
+              <section className="literature-problem-snippet" aria-label="Relevant information summary from retrieved papers">
+                <div className="literature-section-header literature-section-header--stacked">
+                  <div className="literature-section-title-row">
+                    <h3>Relevant information summary</h3>
+                    <span className="literature-snippet-badge">From retrieved papers</span>
+                  </div>
+                  <p className="literature-section-desc">
+                    One paragraph written for copy-paste—complete sentences citing each retrieved paper by author and year.
+                  </p>
+                </div>
+                <div className="literature-snippet-body">
+                  <p>{literature.relatedWorkParagraph}</p>
+                  {literature.gapNote ? <small className="literature-snippet-gap">{literature.gapNote}</small> : null}
+                </div>
+                {insertNotice ? (
+                  <p className="literature-insert-notice" role="status">
+                    {insertNotice}
+                    {!summaryUpToDate ? (
+                      <>
+                        {' '}
+                        <button className="literature-insert-link" type="button" onClick={onFocusProblem}>
+                          Jump to Problem field
+                        </button>
+                      </>
+                    ) : null}
+                  </p>
+                ) : null}
+                <button
+                  className={summaryUpToDate ? 'secondary accepted literature-insert-btn' : 'primary literature-insert-btn'}
+                  type="button"
+                  onClick={() => onInsertRelatedWork(summaryText)}
+                >
+                  <FileText size={16} aria-hidden="true" />
+                  {summaryUpToDate
+                    ? 'Up to date in Problem statement'
+                    : hasStaleLiterature
+                      ? 'Update Problem statement'
+                      : 'Insert into Problem statement'}
+                </button>
+              </section>
+            ) : null}
+          </>
+        ) : null}
+
+        {view.kind === 'idle' ? (
+          <p className="literature-idle">Search for real papers to ground your references. Try <strong>OpenAlex</strong> if another source is slow.</p>
+        ) : null}
+      </div>
     </section>
   );
+}
+
+function formatLiteratureAuthors(authors = [], { collapsed = false } = {}) {
+  if (!authors.length) return 'Unknown authors';
+  if (collapsed) {
+    const preview = authors.slice(0, 2).join(', ');
+    return authors.length > 2 ? `${preview}, +${authors.length - 2} more` : preview;
+  }
+  if (authors.length <= 6) return authors.join(', ');
+  return `${authors.slice(0, 6).join(', ')}, +${authors.length - 6} more`;
+}
+
+function LiteraturePaperCard({ rank, paper, expanded, added, onToggle, onAdd }) {
+  const authorPreview = formatLiteratureAuthors(paper.authors, { collapsed: true });
+  const authorFull = formatLiteratureAuthors(paper.authors);
+  const yearLabel = paper.year ? String(paper.year) : null;
+  const citationCount = paper.citationCount || 0;
+  const citationLabel = citationCount ? `${citationCount.toLocaleString()} citations` : null;
+  const venueLabel = paper.venue ? paper.venue : null;
+
+  return (
+    <article className={`literature-card ${expanded ? 'is-expanded' : ''}`}>
+      <button className="literature-card-toggle" type="button" onClick={onToggle} aria-expanded={expanded}>
+        <span className="literature-paper-rank" aria-hidden="true">
+          {rank}
+        </span>
+        <div className="literature-card-summary">
+          <h3>{paper.title}</h3>
+          <p className="literature-card-authors">{authorPreview}</p>
+          {yearLabel || citationLabel ? (
+            <p className="literature-card-meta-line">
+              {[yearLabel, citationLabel].filter(Boolean).join(' · ')}
+            </p>
+          ) : null}
+        </div>
+        <div className="literature-card-meta">
+          <span className="literature-badge">{formatSourceLabel(paper.source)}</span>
+          <ChevronDown size={18} className={expanded ? 'chevron open' : 'chevron'} aria-hidden="true" />
+        </div>
+      </button>
+
+      {expanded ? (
+        <div className="literature-card-details">
+          <dl className="literature-card-facts">
+            <div className="literature-fact-row">
+              <dt>Authors</dt>
+              <dd>{authorFull}</dd>
+            </div>
+            {yearLabel ? (
+              <div className="literature-fact-row">
+                <dt>Year</dt>
+                <dd>{yearLabel}</dd>
+              </div>
+            ) : null}
+            {venueLabel ? (
+              <div className="literature-fact-row">
+                <dt>Venue</dt>
+                <dd>{venueLabel}</dd>
+              </div>
+            ) : null}
+            {citationLabel ? (
+              <div className="literature-fact-row">
+                <dt>Cited</dt>
+                <dd>{citationLabel}</dd>
+              </div>
+            ) : null}
+          </dl>
+
+          {paper.relevanceNote?.trim() ? (
+            <section className="literature-detail-block literature-detail-relevance">
+              <h4>Why it matters</h4>
+              <p>{paper.relevanceNote.trim()}</p>
+            </section>
+          ) : null}
+
+          {paper.abstract?.trim() ? (
+            <section className="literature-detail-block">
+              <h4>Abstract</h4>
+              <div className="literature-abstract-scroll">
+                <p className="literature-abstract-text">{paper.abstract}</p>
+              </div>
+            </section>
+          ) : (
+            <p className="literature-abstract-missing">No formal abstract is available for this record.</p>
+          )}
+
+          {paper.citation ? (
+            <section className="literature-detail-block literature-detail-cite">
+              <h4>Citation</h4>
+              <p>{paper.citation}</p>
+            </section>
+          ) : null}
+
+          <div className="literature-card-actions">
+            <button className={added ? 'secondary accepted' : 'primary'} type="button" onClick={onAdd} disabled={added}>
+              <CheckCircle2 size={16} aria-hidden="true" />
+              {added ? 'Added' : 'Add citation'}
+            </button>
+            {paper.url ? (
+              <a className="secondary literature-link" href={paper.url} target="_blank" rel="noreferrer">
+                <ExternalLink size={16} aria-hidden="true" />
+                Open paper
+              </a>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function getLiteratureView(literature, status) {
+  if (status === 'loading') {
+    return {
+      kind: 'loading',
+      statusClass: 'is-loading',
+      statusLabel: 'Searching…'
+    };
+  }
+
+  if (!literature) {
+    return {
+      kind: 'idle',
+      statusClass: 'is-idle',
+      statusLabel: 'Ready',
+      hint: null
+    };
+  }
+
+  const paperCount = literature.papers?.length ?? 0;
+  const hasPapers = paperCount > 0;
+  const failed = literature.mode === 'error' || !hasPapers;
+
+  if (failed) {
+    const errors = parseLiteratureErrors(literature);
+    const requestedLabel = formatSourceLabel(literature.source);
+
+    return {
+      kind: 'error',
+      statusClass: 'is-error',
+      statusLabel: 'No results',
+      title: `No papers found${literature.source !== 'auto' ? ` for ${requestedLabel}` : ''}`,
+      summary: 'Try a shorter or more specific topic, or choose OpenAlex as your source.',
+      errors,
+      tip: 'Tip: OpenAlex is the most reliable source right now.',
+      fallbackNotice: null,
+      hint: literature.fallbackSummary || null
+    };
+  }
+
+  const usedLabel = formatSourceLabel(literature.resolvedSource);
+  const requestedLabel = formatSourceLabel(literature.source);
+  const didFallback = Boolean(
+    literature.didFallback ?? (literature.source !== 'auto' && literature.source !== literature.resolvedSource)
+  );
+  const fallbackNotice =
+    didFallback && (literature.fallbackSummary || buildFallbackNotice(literature));
+  const rankedByCitations =
+    literature.rankingMethod === 'citations' || literature.mode === 'local-fallback';
+  const rankingHint = rankedByCitations
+    ? 'Sorted by citation count (highest first), then year — #1 is usually the most influential paper here.'
+    : 'Sorted by AI relevance to your topic. Citation counts still appear on each card when available.';
+
+  return {
+    kind: 'success',
+    statusClass: didFallback ? 'is-fallback' : 'is-success',
+    statusLabel: rankedByCitations
+      ? `${paperCount} paper${paperCount === 1 ? '' : 's'} · by citations`
+      : `${paperCount} paper${paperCount === 1 ? '' : 's'} · ${usedLabel}`,
+    fallbackNotice,
+    hint: didFallback ? null : literature.source === 'auto' ? `Results from ${usedLabel}.` : null,
+    rankedByCitations,
+    rankingHint
+  };
+}
+
+function buildFallbackNotice(literature) {
+  const requested = literature.source;
+  const used = literature.resolvedSource;
+  const intended = literature.intendedSource || (requested === 'auto' ? null : requested);
+
+  if (!used || requested === used) {
+    return '';
+  }
+
+  const usedLabel = formatSourceLabel(used);
+  const requestedLabel = formatSourceLabel(requested);
+  const intendedLabel = formatSourceLabel(intended || requested);
+  const reason = getFailureReasonForSource(literature, intended || requested);
+
+  if (requested === 'auto') {
+    return `We picked ${intendedLabel} for your topic, but ${reason} The papers below are from ${usedLabel}, not ${intendedLabel}.`;
+  }
+
+  return `You selected ${requestedLabel}, but ${reason} The papers below are from ${usedLabel}, not ${requestedLabel}.`;
+}
+
+function getFailureReasonForSource(literature, sourceKey) {
+  const raw = literature?.transcript?.fetchErrors;
+  const line = Array.isArray(raw) ? raw.find((entry) => entry.startsWith(`${sourceKey}:`)) : null;
+  const detail = line ? line.slice(line.indexOf(':') + 1).trim().toLowerCase() : '';
+
+  if (detail.includes('rate limited') || detail.includes('429')) {
+    return 'it is temporarily rate-limited.';
+  }
+
+  if (detail.includes('no results')) {
+    return 'it returned no matches for this topic.';
+  }
+
+  if (detail.includes('timeout')) {
+    return 'the request timed out.';
+  }
+
+  return 'it could not return results.';
+}
+
+function parseLiteratureErrors(literature) {
+  const raw = literature?.transcript?.fetchErrors;
+
+  if (Array.isArray(raw) && raw.length) {
+    return raw.map((line, index) => {
+      const colon = line.indexOf(':');
+      const sourceKey = colon === -1 ? line : line.slice(0, colon).trim();
+      const detail = colon === -1 ? '' : line.slice(colon + 1).trim();
+
+      return {
+        id: `${sourceKey}-${index}`,
+        source: formatSourceLabel(sourceKey),
+        message: humanizeLiteratureError(detail)
+      };
+    });
+  }
+
+  return [];
+}
+
+function humanizeLiteratureError(detail) {
+  const text = String(detail || '').toLowerCase();
+
+  if (text.includes('rate limited') || text.includes('429')) {
+    return 'temporarily rate-limited — try again in a minute or use OpenAlex';
+  }
+
+  if (text.includes('no results')) {
+    return 'no matches for this topic';
+  }
+
+  if (text.includes('timeout')) {
+    return 'request timed out';
+  }
+
+  return detail || 'unavailable';
+}
+
+function formatSourceLabel(source) {
+  const found = LITERATURE_SOURCE_OPTIONS.find(([id]) => id === source);
+  return found?.[1] || source || 'Unknown';
 }
 
 function mergeTextField(current, addition) {
@@ -1185,6 +2017,454 @@ function mergeTextField(current, addition) {
   if (!next) return base;
   if (base.includes(next)) return base;
   return `${base}\n\n${next}`;
+}
+
+function normalizeProblemText(text) {
+  return String(text || '').replace(/\r\n/g, '\n').trim();
+}
+
+function hasAutoLiteratureSummary(text) {
+  const value = String(text || '');
+  return (
+    /Your search on[\s\S]*?problem statement\./i.test(value) ||
+    /No papers were retrieved\. Try different search terms or another source\./.test(value)
+  );
+}
+
+function stripPreviousLiteratureSummary(text, previousSummary) {
+  const prev = String(previousSummary || '').trim();
+  if (!prev) return normalizeProblemText(text);
+
+  let result = String(text || '');
+  if (!result.includes(prev)) return normalizeProblemText(result);
+
+  result = result.replace(prev, '').replace(/\n{3,}/g, '\n\n').trim();
+  return result;
+}
+
+function stripAutoLiteratureBlocks(text) {
+  let result = String(text || '');
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    const next = result
+      .replace(/Your search on[\s\S]*?problem statement\./gi, () => {
+        changed = true;
+        return '';
+      })
+      .replace(/No papers were retrieved\. Try different search terms or another source\./gi, () => {
+        changed = true;
+        return '';
+      })
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+
+    result = next;
+  }
+
+  return result;
+}
+
+function applyLiteratureSummaryToProblem(current, newSummary, previousSummary) {
+  const next = String(newSummary || '').trim();
+  if (!next) return normalizeProblemText(current);
+
+  const original = normalizeProblemText(current);
+  if (original === next) return original;
+
+  let base = stripPreviousLiteratureSummary(original, previousSummary);
+  base = stripAutoLiteratureBlocks(base);
+
+  if (!base) return next;
+  if (base === next || base.includes(next)) return original;
+
+  return `${base}\n\n${next}`;
+}
+
+function isSuggestionApplied(existing, suggestionValue) {
+  const base = String(existing || '').trim();
+  const next = String(suggestionValue || '').trim();
+  if (!next) return true;
+  return base === next || base.includes(next);
+}
+
+function mergeAcceptedFieldValue(existing, incoming) {
+  const base = String(existing || '').trim();
+  const next = String(incoming || '').trim();
+  if (!base) return next;
+  if (!next) return base;
+  if (base === next) return base;
+  if (base.includes(next)) return base;
+  if (next.includes(base)) return next;
+  return mergeTextField(base, next);
+}
+
+function RunLogPanel({ entries }) {
+  const [showAll, setShowAll] = useState(false);
+  const listRef = useRef(null);
+  const total = entries.length;
+  const recentEntries = useMemo(() => entries.slice(-RUN_LOG_RECENT_COUNT).reverse(), [entries]);
+  const fullEntriesNewestFirst = useMemo(() => [...entries].reverse(), [entries]);
+  const visibleEntries = showAll ? fullEntriesNewestFirst : recentEntries;
+  const hiddenCount = Math.max(0, total - RUN_LOG_RECENT_COUNT);
+
+  useEffect(() => {
+    if (!showAll || !listRef.current) return;
+    listRef.current.scrollTop = 0;
+  }, [showAll, entries.length]);
+
+  return (
+    <section className="workflow-panel run-log-panel" aria-label="Run log">
+      <div className="run-log-header">
+        <div>
+          <h2>Run Log</h2>
+          <p className="run-log-subtitle">
+            {total ? (showAll ? 'Full history, newest first' : `Latest ${Math.min(total, RUN_LOG_RECENT_COUNT)} events`) : 'Activity from this session'}
+          </p>
+        </div>
+        {total ? <span className="run-log-count">{total} total</span> : null}
+      </div>
+
+      {total ? (
+        <>
+          <ol
+            ref={listRef}
+            className={['run-log', showAll ? 'run-log--scroll' : 'run-log--compact'].join(' ')}
+          >
+            {visibleEntries.map((entry) => (
+              <li key={entry.id} className="run-log-item">
+                <span className="run-log-stage">{entry.stage}</span>
+                <p>{entry.message}</p>
+              </li>
+            ))}
+          </ol>
+
+          {hiddenCount > 0 ? (
+            <button className="secondary run-log-toggle" type="button" onClick={() => setShowAll((current) => !current)}>
+              {showAll ? (
+                <>
+                  <ChevronDown size={16} aria-hidden="true" />
+                  Show recent only
+                </>
+              ) : (
+                <>
+                  <ChevronDown size={16} className="run-log-toggle-icon" aria-hidden="true" />
+                  View all {total} events ({hiddenCount} older)
+                </>
+              )}
+            </button>
+          ) : null}
+        </>
+      ) : (
+        <EmptyState text="Run log appears after the idea is structured." compact />
+      )}
+    </section>
+  );
+}
+
+function WorkspaceSidebar({ activeViewId, onNavigate, hasTopicContext, badgeContext, llmConfig, llmModel, onSelectModel }) {
+  const currentIndex = WORKSPACE_FLOW_ORDER.indexOf(activeViewId);
+  const prevId = currentIndex > 0 ? WORKSPACE_FLOW_ORDER[currentIndex - 1] : null;
+  const nextId = currentIndex < WORKSPACE_FLOW_ORDER.length - 1 ? WORKSPACE_FLOW_ORDER[currentIndex + 1] : null;
+  const prevView = WORKSPACE_VIEWS.find((view) => view.id === prevId);
+  const nextView = WORKSPACE_VIEWS.find((view) => view.id === nextId);
+  const nextDisabled =
+    (activeViewId === 'start' && !hasTopicContext) || (activeViewId === 'research' && !hasTopicContext);
+
+  return (
+    <aside className="workspace-sidebar" aria-label="Workflow phases">
+      <p className="workspace-sidebar-title">Phases</p>
+
+      <ol className="phase-list">
+        {WORKSPACE_FLOW_ORDER.map((viewId, index) => {
+          const view = WORKSPACE_VIEWS.find((item) => item.id === viewId);
+          const isActive = viewId === activeViewId;
+          const isComplete = index < currentIndex;
+          const badge = workspaceViewBadge(viewId, badgeContext);
+
+          return (
+            <li
+              key={viewId}
+              className={['phase-list-item', isActive ? 'active' : '', isComplete ? 'complete' : ''].filter(Boolean).join(' ')}
+            >
+              <button
+                type="button"
+                className="phase-list-btn"
+                aria-current={isActive ? 'page' : undefined}
+                onClick={() => onNavigate(viewId)}
+              >
+                <span className="phase-list-marker" aria-hidden="true">
+                  {isComplete ? <CheckCircle2 size={14} strokeWidth={2.5} /> : index + 1}
+                </span>
+                <span className="phase-list-label">{view?.label}</span>
+                {badge ? <span className="phase-list-badge">{badge}</span> : null}
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+
+      <ModelSelectorPanel llmConfig={llmConfig} llmModel={llmModel} onSelectModel={onSelectModel} />
+
+      {prevView || nextView ? (
+        <div className={['phase-nav', !prevView || !nextView ? 'phase-nav--single' : ''].filter(Boolean).join(' ')}>
+          {prevView ? (
+            <button className="phase-nav-btn phase-nav-btn--back secondary" type="button" onClick={() => onNavigate(prevView.id)}>
+              <ChevronLeft size={16} aria-hidden="true" />
+              {prevView.label}
+            </button>
+          ) : null}
+          {nextView ? (
+            <button
+              className="phase-nav-btn phase-nav-btn--next primary"
+              type="button"
+              disabled={nextDisabled}
+              onClick={() => onNavigate(nextView.id)}
+            >
+              {nextView.label}
+              <ChevronRight size={16} aria-hidden="true" />
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </aside>
+  );
+}
+
+function getAvailableModelsFromConfig(config) {
+  const models = config?.availableModels?.length
+    ? config.availableModels
+    : config?.suggestedModels?.length
+      ? config.suggestedModels
+      : config?.defaultModel
+        ? [config.defaultModel]
+        : [];
+
+  return models.map((modelId) => String(modelId || '').trim()).filter(Boolean);
+}
+
+function ModelSelectorPanel({ llmConfig, llmModel, onSelectModel }) {
+  const availableModels = getAvailableModelsFromConfig(llmConfig);
+  const activeModel =
+    llmModel.trim() && availableModels.includes(llmModel.trim())
+      ? llmModel.trim()
+      : llmConfig?.defaultModel && availableModels.includes(llmConfig.defaultModel)
+        ? llmConfig.defaultModel
+        : availableModels[0] || '';
+  const providerLabel = llmConfig?.configured
+    ? llmConfig.openRouter
+      ? 'OpenRouter'
+      : llmConfig.apiHost?.includes('google')
+        ? 'Google Gemini'
+        : 'Cloud API'
+    : 'Local fallback';
+  const providerHint = llmConfig?.configured
+    ? availableModels.length > 1
+      ? 'Only models listed in your server .env are shown.'
+      : 'Add LLM_ALLOWED_MODELS in .env to offer more choices.'
+    : 'Add LLM_API_KEY in server .env for cloud models';
+
+  useEffect(() => {
+    if (!availableModels.length) return;
+    if (!llmModel.trim() || !availableModels.includes(llmModel.trim())) {
+      onSelectModel(activeModel);
+    }
+  }, [activeModel, availableModels, llmModel, onSelectModel]);
+
+  return (
+    <section className="model-selector" aria-label="Generation model">
+      <div className="model-selector-header">
+        <span className="model-selector-eyebrow">AI model</span>
+        <span className={`model-provider-badge ${llmConfig?.configured ? 'is-live' : 'is-local'}`}>{providerLabel}</span>
+      </div>
+
+      {llmConfig?.configured && availableModels.length ? (
+        <label className="model-select-field" htmlFor="llm-model-select">
+          Model
+          <select
+            id="llm-model-select"
+            className="model-select"
+            value={activeModel}
+            onChange={(event) => onSelectModel(event.target.value)}
+          >
+            {availableModels.map((modelId) => (
+              <option key={modelId} value={modelId}>
+                {formatModelLabel(modelId)}
+              </option>
+            ))}
+          </select>
+          <span className="model-select-id">{activeModel}</span>
+        </label>
+      ) : (
+        <p className="model-local-note">Generation uses the built-in template until an API key is configured.</p>
+      )}
+
+      <p className="model-selector-hint">{providerHint}</p>
+    </section>
+  );
+}
+
+function formatModelLabel(modelId) {
+  const trimmed = String(modelId || '').trim();
+  if (!trimmed) return 'Default model';
+  if (MODEL_DISPLAY_NAMES[trimmed]) return MODEL_DISPLAY_NAMES[trimmed];
+
+  const slashIndex = trimmed.lastIndexOf('/');
+  if (slashIndex >= 0) {
+    const tail = trimmed.slice(slashIndex + 1);
+    return tail.replace(/[-_]/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+  }
+
+  return trimmed;
+}
+
+function normalizeMemorySnapshot(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Invalid memory snapshot.');
+  }
+
+  const snapshot = value;
+  const project =
+    snapshot.project && typeof snapshot.project === 'object' && !Array.isArray(snapshot.project)
+      ? withDefaultProject(snapshot.project)
+      : createBlankProject();
+
+  const restoredResult = snapshot.result && typeof snapshot.result === 'object' ? snapshot.result : null;
+  const validViews = new Set(WORKSPACE_FLOW_ORDER);
+  const activeWorkspaceView = validViews.has(snapshot.activeWorkspaceView)
+    ? snapshot.activeWorkspaceView
+    : 'start';
+  const validTabs = new Set(TABS.map(([id]) => id));
+  const activeTab = validTabs.has(snapshot.activeTab) ? snapshot.activeTab : 'latex';
+
+  return {
+    savedAt: typeof snapshot.savedAt === 'string' ? snapshot.savedAt : '',
+    topicInput: typeof snapshot.topicInput === 'string' ? snapshot.topicInput : '',
+    project,
+    fieldSuggestions: Array.isArray(snapshot.fieldSuggestions) ? snapshot.fieldSuggestions : [],
+    decisions: Array.isArray(snapshot.decisions) ? snapshot.decisions : [],
+    questions: Array.isArray(snapshot.questions) ? snapshot.questions : [],
+    result: restoredResult
+      ? {
+        mode: typeof restoredResult.mode === 'string' ? restoredResult.mode : '',
+        provider: typeof restoredResult.provider === 'string' ? restoredResult.provider : '',
+        proposalLatex: typeof restoredResult.proposalLatex === 'string' ? restoredResult.proposalLatex : '',
+        complianceMatrix: Array.isArray(restoredResult.complianceMatrix) ? restoredResult.complianceMatrix : [],
+        evaluationReport: typeof restoredResult.evaluationReport === 'string' ? restoredResult.evaluationReport : '',
+        questions: Array.isArray(restoredResult.questions) ? restoredResult.questions : []
+      }
+      : null,
+    runLog: Array.isArray(snapshot.runLog) ? snapshot.runLog : [],
+    activeTab,
+    activeWorkspaceView,
+    suggestionIndex: Number.isFinite(Number(snapshot.suggestionIndex)) ? Number(snapshot.suggestionIndex) : 0,
+    decisionIndex: Number.isFinite(Number(snapshot.decisionIndex)) ? Number(snapshot.decisionIndex) : 0,
+    llmModel: typeof snapshot.llmModel === 'string' ? snapshot.llmModel : ''
+  };
+}
+
+function ProjectFieldCard({ label, value, isOpen, onOpen }) {
+  const summary = summarizeFieldContent(value);
+  const filled = Boolean(String(value || '').trim());
+
+  return (
+    <article className={['project-field-card', isOpen ? 'is-open' : '', filled ? 'has-content' : 'is-empty'].join(' ')}>
+      <button
+        type="button"
+        className="project-field-card-header"
+        aria-haspopup="dialog"
+        aria-expanded={isOpen}
+        onClick={onOpen}
+      >
+        <div className="project-field-card-heading">
+          <h3>{label}</h3>
+          <p className="project-field-summary">{summary}</p>
+        </div>
+        <span className="project-field-open-action" aria-hidden="true">
+          <FileText size={16} />
+          <span>Open editor</span>
+          <ChevronRight size={16} />
+        </span>
+      </button>
+    </article>
+  );
+}
+
+function ProjectFieldEditor({ field, label, value, onChange, onClose, inputRef }) {
+  const charCount = String(value || '').length;
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      inputRef?.current?.focus({ preventScroll: true });
+    });
+  }, [field, inputRef]);
+
+  return (
+    <div
+      className="project-field-focus"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={`project-field-focus-title-${field}`}
+    >
+      <button type="button" className="project-field-focus-backdrop" aria-label="Close editor" onClick={onClose} />
+
+      <div className="project-field-focus-panel">
+        <header className="project-field-focus-header">
+          <div>
+            <p className="project-field-focus-kicker">Editing section</p>
+            <h2 id={`project-field-focus-title-${field}`}>{label}</h2>
+          </div>
+          <button className="secondary project-field-focus-close" type="button" onClick={onClose}>
+            <X size={18} aria-hidden="true" />
+            Close
+          </button>
+        </header>
+
+        <div className="project-field-focus-body">
+          <textarea
+            ref={inputRef}
+            className="project-field-focus-textarea"
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            placeholder={`Write or refine your ${label.toLowerCase()} here…`}
+          />
+        </div>
+
+        <footer className="project-field-focus-footer">
+          <span className="project-field-focus-meta">{charCount} characters</span>
+          <button className="primary" type="button" onClick={onClose}>
+            Done editing
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function summarizeFieldContent(text, maxSentences = 2) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!value) return 'No content yet — expand to add details.';
+
+  const sentences = value.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g) || [value];
+  const trimmed = sentences.map((part) => part.trim()).filter(Boolean);
+
+  if (trimmed.length <= maxSentences) {
+    return value.length > 320 ? `${value.slice(0, 317).trim()}…` : value;
+  }
+
+  return trimmed.slice(0, maxSentences).join(' ');
 }
 
 function PanelHeader({ title, meta }) {
@@ -1240,6 +2520,59 @@ function logEntry(stage, message) {
 
 function readError(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function formatGenerationProvider(result) {
+  if (!result) {
+    return { label: 'Waiting', meta: '' };
+  }
+
+  const raw = String(result.provider || '').trim();
+  const normalized = raw.toLowerCase();
+  const mode = String(result.mode || '').trim().toLowerCase();
+
+  if (normalized === 'local-template' || normalized === 'template' || mode === 'template') {
+    return { label: 'Local template', meta: 'No API configured' };
+  }
+
+  if (normalized.startsWith('gemini:')) {
+    return { label: 'Google Gemini', meta: raw.slice('gemini:'.length) };
+  }
+
+  if (normalized === 'gemini' || normalized.includes('generativelanguage')) {
+    return { label: 'Google Gemini', meta: 'Cloud API' };
+  }
+
+  if (normalized.startsWith('openrouter:')) {
+    const modelId = raw.slice('openrouter:'.length);
+    return {
+      label: 'OpenRouter',
+      meta: modelId.includes('owl-alpha') ? 'Owl Alpha' : modelId
+    };
+  }
+
+  if (normalized.startsWith('api:')) {
+    return { label: 'LLM API', meta: raw.slice('api:'.length) };
+  }
+
+  if (normalized === 'openai-compatible') {
+    return { label: 'OpenAI-compatible', meta: 'Remote API' };
+  }
+
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const host = new URL(raw).hostname.replace(/^www\./, '');
+      const label = host.includes('generativelanguage') || host.includes('google') ? 'Google Gemini' : 'LLM API';
+      return { label, meta: host };
+    } catch {
+      return { label: 'LLM API', meta: '' };
+    }
+  }
+
+  return {
+    label: raw || (mode === 'api' ? 'LLM API' : 'Local'),
+    meta: mode === 'api' ? 'API mode' : ''
+  };
 }
 
 function compactResult(result) {

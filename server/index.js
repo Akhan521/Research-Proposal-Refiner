@@ -4,7 +4,12 @@ import express from 'express';
 import { explainProposal } from './explain.js';
 import { searchLiterature } from './literature.js';
 import { proposalLatexToPdf } from './pdfExport.js';
-import { answerAgentQuestion, generateProposal, startAgentSession } from './proposalGenerator.js';
+import {
+  answerAgentQuestion,
+  generateProposal,
+  getLlmPublicConfig,
+  startAgentSession
+} from './proposalGenerator.js';
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
@@ -13,10 +18,17 @@ app.use(cors({ origin: process.env.CORS_ORIGIN || true }));
 app.use(express.json({ limit: '1mb' }));
 
 app.get('/api/health', (_request, response) => {
+  const llm = getLlmPublicConfig();
+
   response.json({
     ok: true,
-    mode: process.env.LLM_API_KEY ? 'api-ready' : 'local-fallback'
+    mode: llm.configured ? 'api-ready' : 'local-fallback',
+    llm
   });
+});
+
+app.get('/api/llm-config', (_request, response) => {
+  response.json(getLlmPublicConfig());
 });
 
 app.post('/api/agent/start', async (request, response) => {
@@ -89,7 +101,8 @@ app.post('/api/literature', async (request, response) => {
         topic,
         problem: payload.problem || payload.project?.problem,
         source: payload.source,
-        limit: payload.limit
+        limit: payload.limit,
+        llmModel: payload.llmModel
       })
     );
   } catch (error) {
@@ -114,7 +127,8 @@ app.post('/api/explain', async (request, response) => {
       await explainProposal({
         project,
         proposalLatex: payload.proposalLatex,
-        level: payload.level
+        level: payload.level,
+        llmModel: payload.llmModel
       })
     );
   } catch (error) {

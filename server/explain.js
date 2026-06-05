@@ -1,4 +1,4 @@
-import { callModel, clean, parseJsonContent } from './proposalGenerator.js';
+import { callModel, clean, parseJsonContent, getGenerationProviderLabel, resolveLlmModel } from './proposalGenerator.js';
 
 export const EXPLAIN_LEVELS = {
   kid: {
@@ -69,23 +69,19 @@ function buildSourceContent({ project, proposalLatex }) {
   };
 }
 
-export async function explainProposal({ project, proposalLatex, level }) {
+export async function explainProposal({ project, proposalLatex, level, llmModel }) {
   const normalizedLevel = EXPLAIN_LEVELS[level] ? level : DEFAULT_LEVEL;
   const source = buildSourceContent({ project, proposalLatex });
 
   if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
-    return explainWithApi({ source, level: normalizedLevel });
+    return explainWithApi({ source, level: normalizedLevel, llmModel });
   }
 
   return explainLocally({ source, level: normalizedLevel });
 }
 
-async function explainWithApi({ source, level }) {
-  const model = clean(process.env.LLM_MODEL);
-
-  if (!model) {
-    throw new Error('LLM_MODEL is required when LLM_API_KEY and LLM_API_URL are configured.');
-  }
+async function explainWithApi({ source, level, llmModel }) {
+  const model = resolveLlmModel(llmModel);
 
   const systemPrompt = buildSystemPrompt(level);
   const payload = { level, source };
@@ -94,7 +90,7 @@ async function explainWithApi({ source, level }) {
 
   return {
     mode: 'api',
-    provider: process.env.LLM_API_URL,
+    provider: getGenerationProviderLabel(model),
     level,
     levelLabel: EXPLAIN_LEVELS[level].label,
     ...coerceExplanation(parsed, source),
