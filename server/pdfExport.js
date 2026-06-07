@@ -9,34 +9,67 @@ const require = createRequire(import.meta.url);
 const { platformResolver } = require('node-latex-compiler');
 const execFileAsync = promisify(execFile);
 
-export async function proposalLatexToPdf(latex, title = 'proposal') {
-  const source = String(latex || '').trim();
+export function prepareLatexDocument(source, title = 'proposal') {
+  const trimmed = String(source || '').trim();
 
-  if (!source) {
+  if (!trimmed) {
     throw new Error('LaTeX source is empty.');
   }
 
-  const document = sanitizeLatexForExport(ensureCompleteLatexDocument(source, title), title);
+  return sanitizeLatexForExport(ensureCompleteLatexDocument(trimmed, title), title);
+}
+
+export async function compileLatexDocument(document) {
+  const source = String(document || '').trim();
+
+  if (!source) {
+    return { ok: false, error: 'LaTeX source is empty.' };
+  }
+
   const workdir = await mkdtemp(path.join(tmpdir(), 'proposal-tex-'));
   const texPath = path.join(workdir, 'proposal.tex');
   const pdfPath = path.join(workdir, 'proposal.pdf');
 
   try {
-    await writeFile(texPath, document, 'utf8');
+    await writeFile(texPath, source, 'utf8');
     const tectonicPath = resolveBundledTectonic() || 'tectonic';
     await runTectonic(tectonicPath, workdir, texPath);
-    return await readFile(pdfPath);
+    const pdf = await readFile(pdfPath);
+    return { ok: true, pdf };
   } catch (error) {
     if (isMissingTectonicError(error)) {
-      throw new Error(
-        'PDF compiler is unavailable. Run `npm install` in the project folder, then try again. LaTeX output remains available in the LaTeX tab.'
-      );
+      return {
+        ok: false,
+        compilerUnavailable: true,
+        error: 'PDF compiler is unavailable.'
+      };
     }
 
-    throw new Error(cleanCompileError(extractCompileFailure(error)) || 'PDF compilation failed.');
+    return {
+      ok: false,
+      error: cleanCompileError(extractCompileFailure(error)) || 'PDF compilation failed.'
+    };
   } finally {
     await rm(workdir, { recursive: true, force: true });
   }
+}
+
+export async function proposalLatexToPdf(latex, title = 'proposal') {
+  const { validateProposalLatex } = await import('./latexValidate.js');
+  const validation = await validateProposalLatex(latex, title);
+  const compile = await compileLatexDocument(validation.latex);
+
+  if (compile.ok) {
+    return compile.pdf;
+  }
+
+  if (compile.compilerUnavailable) {
+    throw new Error(
+      'PDF compiler is unavailable. Run `npm install` in the project folder, then try again. LaTeX output remains available in the LaTeX tab.'
+    );
+  }
+
+  throw new Error(compile.error || 'PDF compilation failed.');
 }
 
 function resolveBundledTectonic() {

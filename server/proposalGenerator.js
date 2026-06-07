@@ -4,6 +4,7 @@ import {
   DEFAULT_PROJECT_TOPIC,
   DEFAULT_REQUIREMENTS
 } from '../shared/mathlmDefaults.js';
+import { validateProposalLatex } from './latexValidate.js';
 
 const EMPTY_PROJECT_FOR_SERVER = createBlankProject();
 const PROJECT_FALLBACKS = DEFAULT_PROJECT;
@@ -189,11 +190,12 @@ export async function generateProposal(payload) {
   const requirements = project.requirements || DEFAULT_REQUIREMENTS;
   const checklist = extractChecklist(requirements);
 
-  if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
-    return generateWithApi(project, checklist, payload.llmModel);
-  }
+  const result =
+    process.env.LLM_API_KEY && process.env.LLM_API_URL
+      ? await generateWithApi(project, checklist, payload.llmModel)
+      : generateLocally(project, checklist);
 
-  return generateLocally(project, checklist);
+  return finalizeProposalOutput(result, project, checklist);
 }
 
 export function resolveLlmModel(override) {
@@ -385,6 +387,7 @@ async function callOpenAiCompatible({ systemPrompt, payload, model, temperature 
     body: JSON.stringify({
       model,
       temperature,
+      max_tokens: Number(process.env.LLM_MAX_TOKENS) || 16384,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: JSON.stringify(payload, null, 2) }
@@ -399,6 +402,58 @@ async function callOpenAiCompatible({ systemPrompt, payload, model, temperature 
   }
 
   return readModelContent(data);
+}
+
+async function finalizeProposalOutput(result, project, checklist) {
+  const title = project.title || project.topic || 'proposal';
+  const validation = await validateProposalLatex(result.proposalLatex, title, {
+    fallbackLatex: buildLocalProposalLatex(project)
+  });
+
+  const complianceMatrix = buildComplianceMatrixFromDraft(
+    checklist,
+    project,
+    validation.latex,
+    result.complianceMatrix
+  );
+  const evaluationReport = appendLatexValidationNote(result.evaluationReport, validation);
+
+  return {
+    ...result,
+    proposalLatex: validation.latex,
+    complianceMatrix,
+    evaluationReport,
+    latexValidation: {
+      validated: validation.validated,
+      repaired: validation.repaired,
+      usedFallback: validation.usedFallback,
+      warning: validation.warning || '',
+      attempts: validation.attempts || []
+    }
+  };
+}
+
+function appendLatexValidationNote(report, validation) {
+  const base = clean(report) || '# Evaluation Report\n\nNo evaluation report returned.';
+  const notes = [];
+
+  if (validation.usedFallback) {
+    notes.push('- LaTeX compile verification failed for the model draft, so a compile-safe fallback proposal was substituted.');
+  } else if (validation.repaired) {
+    notes.push('- LaTeX compile verification repaired unescaped special characters before export.');
+  } else if (validation.validated) {
+    notes.push('- LaTeX compile verification passed before export.');
+  }
+
+  if (validation.warning) {
+    notes.push(`- ${validation.warning}`);
+  }
+
+  if (!notes.length) {
+    return base;
+  }
+
+  return `${base}\n\n## LaTeX Validation\n${notes.join('\n')}\n`;
 }
 
 function generateLocally(project, checklist) {
@@ -985,24 +1040,176 @@ export function parseJsonContent(content) {
   const candidate = (fenced?.[1] || trimmed).trim();
 
   try {
-    return JSON.parse(candidate);
+    return enrichParsedProposalPayload(JSON.parse(candidate), candidate);
   } catch {
     const extracted = extractLikelyJsonObject(candidate);
     if (extracted) {
       try {
-        return JSON.parse(extracted);
+        return enrichParsedProposalPayload(JSON.parse(extracted), candidate);
       } catch {
         // fall through
       }
     }
 
-    return {
-      proposalLatex: looksLikeLatex(trimmed) ? trimmed : '',
-      complianceMatrix: [],
-      evaluationReport: '# Evaluation Report\n\nThe API returned text that was not JSON.',
-      questions: ['Should the API prompt be tightened to return strict JSON?']
-    };
+    return recoverPartialProposalPayload(candidate);
   }
+}
+
+function enrichParsedProposalPayload(parsed, rawText) {
+  const next = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? { ...parsed } : {};
+
+  if (!Array.isArray(next.complianceMatrix) || !next.complianceMatrix.length) {
+    const matrix =
+      extractJsonArrayField(rawText, 'complianceMatrix') ||
+      extractJsonArrayField(rawText, 'compliance_matrix');
+    if (matrix?.length) {
+      next.complianceMatrix = matrix;
+    }
+  }
+
+  if (!clean(next.proposalLatex)) {
+    const latex =
+      extractJsonStringField(rawText, 'proposalLatex') ||
+      extractNestedLatexString(rawText) ||
+      clean(next.proposalTex) ||
+      clean(next.latex);
+    if (latex) {
+      next.proposalLatex = latex;
+    }
+  }
+
+  return next;
+}
+
+function recoverPartialProposalPayload(rawText) {
+  const proposalLatex =
+    extractJsonStringField(rawText, 'proposalLatex') ||
+    extractNestedLatexString(rawText) ||
+    (looksLikeLatex(rawText) ? rawText : '');
+  const complianceMatrix =
+    extractJsonArrayField(rawText, 'complianceMatrix') ||
+    extractJsonArrayField(rawText, 'compliance_matrix') ||
+    [];
+  const evaluationReport =
+    extractJsonStringField(rawText, 'evaluationReport') ||
+    '# Evaluation Report\n\nThe API returned text that was not strict JSON. Coverage was rebuilt from the validated proposal draft.';
+  const questions = extractJsonArrayField(rawText, 'questions') || [
+    'Should the API prompt be tightened to return strict JSON?'
+  ];
+
+  return {
+    proposalLatex,
+    complianceMatrix,
+    evaluationReport,
+    questions
+  };
+}
+
+function extractJsonArrayField(text, fieldName) {
+  const marker = `"${fieldName}"`;
+  const index = String(text || '').indexOf(marker);
+  if (index === -1) return null;
+
+  const start = text.indexOf('[', index + marker.length);
+  if (start === -1) return null;
+
+  const segment = readBalancedJsonSegment(text, start, '[', ']');
+  if (!segment) return null;
+
+  try {
+    const parsed = JSON.parse(segment);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractJsonStringField(text, fieldName) {
+  const marker = `"${fieldName}"`;
+  const index = String(text || '').indexOf(marker);
+  if (index === -1) return '';
+
+  let cursor = index + marker.length;
+  while (cursor < text.length && /\s/.test(text[cursor])) cursor += 1;
+  if (text[cursor] !== ':') return '';
+  cursor += 1;
+  while (cursor < text.length && /\s/.test(text[cursor])) cursor += 1;
+  if (text[cursor] !== '"') return '';
+
+  let value = '';
+  let escaped = false;
+
+  for (cursor += 1; cursor < text.length; cursor += 1) {
+    const char = text[cursor];
+
+    if (escaped) {
+      if (char === 'n') value += '\n';
+      else if (char === 't') value += '\t';
+      else if (char === 'r') value += '\r';
+      else if (char === '"') value += '"';
+      else if (char === '\\') value += '\\';
+      else value += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (char === '"') {
+      return value;
+    }
+
+    value += char;
+  }
+
+  return value;
+}
+
+function readBalancedJsonSegment(text, startIndex, open, close) {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = startIndex; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+
+      if (char === '\\') {
+        escaped = true;
+        continue;
+      }
+
+      if (char === '"') {
+        inString = false;
+      }
+
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (char === open) {
+      depth += 1;
+    } else if (char === close) {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(startIndex, index + 1);
+      }
+    }
+  }
+
+  return '';
 }
 
 function extractLikelyJsonObject(text) {
@@ -1016,40 +1223,172 @@ function extractLikelyJsonObject(text) {
   return candidate;
 }
 
-function coerceResult(result, project, checklist) {
-  const normalizedRows = Array.isArray(result.complianceMatrix)
-    ? result.complianceMatrix
+function normalizeRequirementKey(value) {
+  return clean(value)
+    .replace(/^[-*]\s*/, '')
+    .replace(/^\d+[.)]\s*/, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeCoverageStatus(value) {
+  const status = clean(value);
+  if (/^covered$/i.test(status)) return 'Covered';
+  if (/^(?:met|pass|yes|complete|included)$/i.test(status)) return 'Covered';
+  if (/^needs work$/i.test(status)) return 'Needs work';
+  return status || 'Needs work';
+}
+
+function matchComplianceRow(requirement, normalizedRows, index, checklistLength) {
+  const key = normalizeRequirementKey(requirement);
+  const rowByKey = new Map();
+
+  normalizedRows.forEach((row) => {
+    const rowKey = normalizeRequirementKey(row.requirement);
+    if (rowKey && !rowByKey.has(rowKey)) {
+      rowByKey.set(rowKey, row);
+    }
+  });
+
+  if (key && rowByKey.has(key)) {
+    return rowByKey.get(key);
+  }
+
+  if (key) {
+    for (const [rowKey, row] of rowByKey.entries()) {
+      if (rowKey.includes(key) || key.includes(rowKey)) {
+        return row;
+      }
+    }
+  }
+
+  if (normalizedRows.length === checklistLength && normalizedRows[index]) {
+    return normalizedRows[index];
+  }
+
+  return null;
+}
+
+function normalizeComplianceRows(rows) {
+  return Array.isArray(rows)
+    ? rows
       .filter(Boolean)
       .map((row) => ({
         requirement: clean(row.requirement),
-        status: clean(row.status) || 'Needs work',
+        status: normalizeCoverageStatus(row.status),
         evidence: clean(row.evidence),
         fix: clean(row.fix)
       }))
     : [];
+}
 
-  const rowByRequirement = new Map(
-    normalizedRows
-      .filter((row) => row.requirement)
-      .map((row) => [row.requirement.toLowerCase(), row])
-  );
+function isMatrixPlaceholderEvidence(value) {
+  return /api did not provide matrix evidence/i.test(clean(value));
+}
 
-  const filledMatrix = checklist.map((requirement) => {
-    const key = clean(requirement).toLowerCase();
-    const found = rowByRequirement.get(key);
-    if (found) return { ...found, requirement };
+export function buildComplianceMatrixFromDraft(checklist, project, proposalLatex, apiRows = []) {
+  const normalizedRows = normalizeComplianceRows(apiRows);
+
+  return checklist.map((requirement, index) => {
+    const apiMatch = matchComplianceRow(requirement, normalizedRows, index, checklist.length);
+    const draftEvidence =
+      findRequirementEvidence(requirement, project) || findEvidenceInLatex(requirement, proposalLatex);
+    const apiEvidence =
+      apiMatch?.evidence && !isMatrixPlaceholderEvidence(apiMatch.evidence) ? apiMatch.evidence : '';
+
+    if (draftEvidence) {
+      return {
+        requirement,
+        status: 'Covered',
+        evidence: apiEvidence || draftEvidence,
+        fix: apiMatch?.fix || 'Verified in the validated proposal draft.'
+      };
+    }
+
+    if (apiMatch && apiEvidence) {
+      return {
+        ...apiMatch,
+        requirement,
+        status: normalizeCoverageStatus(apiMatch.status)
+      };
+    }
 
     return {
       requirement,
       status: 'Needs work',
-      evidence: 'API did not provide matrix evidence.',
-      fix: 'Regenerate with stricter output instructions.'
+      evidence: 'No clear evidence found in the validated proposal draft.',
+      fix: apiMatch?.fix || `Add concrete detail for: ${requirement}.`
     };
   });
+}
+
+function latexSectionMatches(latex, keywords) {
+  const pattern = keywords
+    .map((keyword) => keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|');
+
+  return new RegExp(`\\\\section\\*?\\{[^\\n}]*(?:${pattern})`, 'i').test(String(latex || ''));
+}
+
+function findEvidenceInLatex(requirement, proposalLatex) {
+  const latex = String(proposalLatex || '');
+  if (!latex) return '';
+
+  const text = normalizeRequirementKey(requirement);
+
+  if (/title/.test(text) && (latex.includes('\\title{') || latex.includes('\\maketitle'))) {
+    return 'Proposal draft includes a title block.';
+  }
+  if (/abstract/.test(text) && (latex.includes('\\begin{abstract}') || latexSectionMatches(latex, ['abstract']))) {
+    return 'Proposal draft includes an abstract section.';
+  }
+  if (/motivation|gap/.test(text) && (latexSectionMatches(latex, ['motivation', 'gap', 'problem']) || /research gap/i.test(latex))) {
+    return 'Proposal draft discusses motivation or the research gap.';
+  }
+  if (/goal/.test(text) && latexSectionMatches(latex, ['goal', 'objective', 'aim'])) {
+    return 'Proposal draft states a project goal or objective.';
+  }
+  if (/method|workflow/.test(text) && latexSectionMatches(latex, ['method', 'workflow', 'approach', 'agent'])) {
+    return 'Proposal draft describes the method or workflow.';
+  }
+  if (/figure|diagram/.test(text) && (/\\begin{figure/.test(latex) || /\\caption{/.test(latex) || /tikzpicture/.test(latex))) {
+    return 'Proposal draft includes a figure or diagram with caption.';
+  }
+  if (/expected|result/.test(text) && latexSectionMatches(latex, ['expected', 'result', 'outcome'])) {
+    return 'Proposal draft includes expected results.';
+  }
+  if (/milestone|timeline/.test(text) && latexSectionMatches(latex, ['milestone', 'timeline', 'schedule'])) {
+    return 'Proposal draft includes milestones or timeline content.';
+  }
+  if (/evaluation|metric/.test(text) && latexSectionMatches(latex, ['evaluation', 'metric', 'benchmark', 'test'])) {
+    return 'Proposal draft includes an evaluation plan.';
+  }
+  if (/risk|mitigation/.test(text) && latexSectionMatches(latex, ['risk', 'mitigation'])) {
+    return 'Proposal draft discusses risks and mitigation.';
+  }
+  if (/resource|budget/.test(text) && latexSectionMatches(latex, ['resource', 'budget', 'compute'])) {
+    return 'Proposal draft includes resources or budget notes.';
+  }
+  if (/reference|assumption|source/.test(text) && (latexSectionMatches(latex, ['reference', 'bibliography', 'source', 'assumption']) || /\\begin{thebibliography}/.test(latex))) {
+    return 'Proposal draft includes references or source notes.';
+  }
+
+  return '';
+}
+
+function coerceResult(result, project, checklist) {
+  const proposalLatex = extractProposalLatex(result, project);
+  const complianceMatrix = buildComplianceMatrixFromDraft(
+    checklist,
+    project,
+    proposalLatex,
+    result.complianceMatrix
+  );
 
   return {
-    proposalLatex: extractProposalLatex(result, project),
-    complianceMatrix: filledMatrix,
+    proposalLatex,
+    complianceMatrix,
     evaluationReport: clean(result.evaluationReport) || '# Evaluation Report\n\nNo evaluation report returned.',
     questions: Array.isArray(result.questions) ? result.questions.map(clean).filter(Boolean).slice(0, 5) : []
   };

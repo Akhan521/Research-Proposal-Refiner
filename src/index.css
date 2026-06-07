@@ -1395,6 +1395,23 @@ textarea:focus {
   transform: rotate(-90deg);
 }
 
+.run-log-panel .empty-state.compact {
+  margin-top: 8px;
+  min-height: 0;
+  padding: 28px 26px;
+  gap: 14px;
+  border-color: #d5e0e4;
+  background: #f8fafb;
+}
+
+.run-log-panel .empty-state.compact p {
+  max-width: 22rem;
+  font-weight: 600;
+  font-size: 0.86rem;
+  line-height: 1.6;
+  color: #5f6d72;
+}
+
 .artifact-toolbar {
   justify-content: space-between;
 }
