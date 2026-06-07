@@ -869,9 +869,9 @@ function App() {
     <main className="app-shell">
       <header className="topbar">
         <h1>Research Proposal Agent</h1>
-        <span className="status-pill">
+        <span className="status-pill" aria-live="polite" aria-label={`Current phase: ${currentWorkspaceView.label}`}>
           <Sparkles size={16} aria-hidden="true" />
-          {result?.mode || (fieldSuggestions.length ? 'structuring' : 'ready')}
+          {currentWorkspaceView.label}
         </span>
       </header>
 
