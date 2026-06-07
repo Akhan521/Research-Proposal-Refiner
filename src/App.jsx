@@ -1213,10 +1213,10 @@ function App() {
 
           {activeWorkspaceView === 'output' ? (
             <div className="view-page view-page--output">
-              <div className="workflow-columns">
+              <div className="workflow-columns workflow-columns--output">
                 <RunLogPanel entries={runLog} />
 
-                <section className="workflow-panel artifacts-panel">
+                <div className="artifacts-column">
                   <div className="artifact-toolbar">
                     <nav className="tabs" aria-label="Generated artifacts">
                       {TABS.map(([id, Icon, label]) => (
@@ -1231,19 +1231,21 @@ function App() {
                         </button>
                       ))}
                     </nav>
-                    <button className="secondary" type="button" disabled={!result?.proposalLatex} onClick={downloadLatex}>
-                      <Download size={17} aria-hidden="true" />
-                      LaTeX
-                    </button>
-                    <button
-                      className="primary"
-                      type="button"
-                      disabled={!result?.proposalLatex || status !== 'idle'}
-                      onClick={downloadPdf}
-                    >
-                      {status === 'exporting' ? <Loader2 className="spin" size={17} aria-hidden="true" /> : <Download size={17} aria-hidden="true" />}
-                      PDF
-                    </button>
+                    <div className="artifact-downloads">
+                      <button className="secondary" type="button" disabled={!result?.proposalLatex} onClick={downloadLatex}>
+                        <Download size={17} aria-hidden="true" />
+                        LaTeX
+                      </button>
+                      <button
+                        className="primary"
+                        type="button"
+                        disabled={!result?.proposalLatex || status !== 'idle'}
+                        onClick={downloadPdf}
+                      >
+                        {status === 'exporting' ? <Loader2 className="spin" size={17} aria-hidden="true" /> : <Download size={17} aria-hidden="true" />}
+                        PDF
+                      </button>
+                    </div>
                   </div>
 
                   <div className="artifact-summary">
@@ -1266,13 +1268,13 @@ function App() {
                     </div>
                   </div>
 
-                  {pdfExportError && pdfStatus !== 'ready' && result?.proposalLatex ? (
-                    <p className="artifact-pdf-notice" role="status">
-                      {pdfExportError}
-                    </p>
-                  ) : null}
-
                   <div className="artifact-content">
+                    {pdfExportError && pdfStatus !== 'ready' && result?.proposalLatex ? (
+                      <p className="artifact-pdf-notice" role="status">
+                        {pdfExportError}
+                      </p>
+                    ) : null}
+
                     {activeTab === 'explain' ? (
                       <ExplainPanel
                         explain={explain}
@@ -1292,7 +1294,7 @@ function App() {
                       })
                     )}
                   </div>
-                </section>
+                </div>
               </div>
             </div>
           ) : null}
@@ -2100,7 +2102,7 @@ function RunLogPanel({ entries }) {
   }, [showAll, entries.length]);
 
   return (
-    <section className="workflow-panel run-log-panel" aria-label="Run log">
+    <div className="run-log-column">
       <div className="run-log-header">
         <div>
           <h2>Run Log</h2>
@@ -2111,40 +2113,44 @@ function RunLogPanel({ entries }) {
         {total ? <span className="run-log-count">{total} total</span> : null}
       </div>
 
-      {total ? (
-        <>
-          <ol
-            ref={listRef}
-            className={['run-log', showAll ? 'run-log--scroll' : 'run-log--compact'].join(' ')}
-          >
-            {visibleEntries.map((entry) => (
-              <li key={entry.id} className="run-log-item">
-                <span className="run-log-stage">{entry.stage}</span>
-                <p>{entry.message}</p>
-              </li>
-            ))}
-          </ol>
+      <section className="run-log-panel" aria-label="Run log">
+        <div className="run-log-body">
+          {total ? (
+            <>
+              <ol
+                ref={listRef}
+                className={['run-log', showAll ? 'run-log--scroll' : 'run-log--compact'].join(' ')}
+              >
+                {visibleEntries.map((entry) => (
+                  <li key={entry.id} className="run-log-item">
+                    <span className="run-log-stage">{entry.stage}</span>
+                    <p>{entry.message}</p>
+                  </li>
+                ))}
+              </ol>
 
-          {hiddenCount > 0 ? (
-            <button className="secondary run-log-toggle" type="button" onClick={() => setShowAll((current) => !current)}>
-              {showAll ? (
-                <>
-                  <ChevronDown size={16} aria-hidden="true" />
-                  Show recent only
-                </>
-              ) : (
-                <>
-                  <ChevronDown size={16} className="run-log-toggle-icon" aria-hidden="true" />
-                  View all {total} events ({hiddenCount} older)
-                </>
-              )}
-            </button>
-          ) : null}
-        </>
-      ) : (
-        <EmptyState text="Run log appears after the idea is structured." compact />
-      )}
-    </section>
+              {hiddenCount > 0 ? (
+                <button className="secondary run-log-toggle" type="button" onClick={() => setShowAll((current) => !current)}>
+                  {showAll ? (
+                    <>
+                      <ChevronDown size={16} aria-hidden="true" />
+                      Show recent only
+                    </>
+                  ) : (
+                    <>
+                      <ChevronDown size={16} className="run-log-toggle-icon" aria-hidden="true" />
+                      View all {total} events ({hiddenCount} older)
+                    </>
+                  )}
+                </button>
+              ) : null}
+            </>
+          ) : (
+            <EmptyState text="Run log appears after the idea is structured." compact />
+          )}
+        </div>
+      </section>
+    </div>
   );
 }
 

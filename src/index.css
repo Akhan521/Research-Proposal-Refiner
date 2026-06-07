@@ -966,9 +966,23 @@ textarea:focus {
 }
 
 .artifact-content {
-  min-height: min(72vh, 760px);
+  min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+.artifact-content>.artifact-pdf-notice {
+  flex: 0 0 auto;
+}
+
+.artifact-content> :not(.artifact-pdf-notice) {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.artifact-content .empty-state {
+  flex: 1;
+  min-height: 0;
 }
 
 .artifact-status-card {
@@ -1264,6 +1278,34 @@ textarea:focus {
   display: grid;
   grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
   gap: 16px;
+  align-items: start;
+}
+
+.workflow-columns--output {
+  align-items: stretch;
+}
+
+.run-log-column,
+.artifacts-column {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.run-log-header {
+  flex-shrink: 0;
+}
+
+.run-log-panel,
+.artifact-content {
+  flex: 1 1 auto;
+  min-height: min(72vh, 760px);
+}
+
+.artifact-toolbar,
+.artifact-summary {
+  flex-shrink: 0;
 }
 
 .workflow-panel {
@@ -1273,11 +1315,22 @@ textarea:focus {
 }
 
 .run-log-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
   min-width: 0;
+  min-height: 0;
   border: 1px solid #cbd7dc;
   border-radius: 10px;
   padding: 16px 18px;
   background: #ffffff;
+}
+
+.run-log-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .run-log-header {
@@ -1325,10 +1378,13 @@ textarea:focus {
 .run-log--compact {
   max-height: none;
   overflow: visible;
+  flex: 1;
 }
 
 .run-log--scroll {
-  max-height: min(22rem, 42vh);
+  flex: 1;
+  min-height: 0;
+  max-height: none;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1389,6 +1445,8 @@ textarea:focus {
 .run-log-toggle {
   width: 100%;
   justify-content: center;
+  flex-shrink: 0;
+  margin-top: auto;
 }
 
 .run-log-toggle-icon {
@@ -1396,10 +1454,11 @@ textarea:focus {
 }
 
 .run-log-panel .empty-state.compact {
-  margin-top: 8px;
+  flex: 1;
+  margin-top: 0;
   min-height: 0;
-  padding: 28px 26px;
-  gap: 14px;
+  padding: 20px 22px;
+  gap: 12px;
   border-color: #d5e0e4;
   background: #f8fafb;
 }
@@ -1414,6 +1473,13 @@ textarea:focus {
 
 .artifact-toolbar {
   justify-content: space-between;
+}
+
+.artifact-downloads {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .artifact-summary {
