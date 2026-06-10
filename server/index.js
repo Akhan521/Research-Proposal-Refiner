@@ -8,6 +8,7 @@ import {
   answerAgentQuestion,
   generateProposal,
   getLlmPublicConfig,
+  refineAgentStructure,
   startAgentSession
 } from './proposalGenerator.js';
 
@@ -62,6 +63,26 @@ app.post('/api/agent/answer', async (request, response) => {
   } catch (error) {
     response.status(500).json({
       error: 'Answer integration failed.',
+      detail: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
+app.post('/api/agent/refine-structure', async (request, response) => {
+  try {
+    const payload = request.body || {};
+    const project = payload.project || {};
+    const topic = String(project.topic || project.title || payload.topic || '').trim();
+
+    if (!topic) {
+      response.status(400).json({ error: 'Project topic or title is required.' });
+      return;
+    }
+
+    response.json(await refineAgentStructure(payload));
+  } catch (error) {
+    response.status(500).json({
+      error: 'Structure refinement failed.',
       detail: error instanceof Error ? error.message : String(error)
     });
   }

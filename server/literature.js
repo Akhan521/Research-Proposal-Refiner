@@ -1,3 +1,4 @@
+import { formatCanonicalCitation } from './citationValidate.js';
 import { callModel, clean, parseJsonContent, resolveLlmModel } from './proposalGenerator.js';
 
 export const LITERATURE_SOURCES = {
@@ -36,7 +37,7 @@ Rules:
 - Never use ellipses (...) or cut off mid-sentence. Every sentence must be grammatically complete.
 - relatedWorkParagraph must read as a synthesis of retrieved papers that may be relevant—not a formal prior-work review.
 - Order papers by relevanceScore descending.
-- citation must include title, authors, year, and URL or DOI when available.`;
+- Do not invent citation strings; relevance scoring only. Canonical citations are built from paper metadata on the server.`;
 
 export async function searchLiterature({ topic, problem, source = 'auto', limit = DEFAULT_LIMIT, llmModel }) {
   const query = buildSearchQuery(topic, problem);
@@ -247,7 +248,7 @@ function applyLocalRanking(papers, context = {}) {
     ...paper,
     relevanceScore: paper.citationCount || 0,
     relevanceNote: buildLocalRelevanceNote(paper, context),
-    citation: paper.citation || formatCitation(paper)
+    citation: paper.citation || formatCanonicalCitation(paper)
   }));
 }
 
@@ -706,7 +707,7 @@ function normalizePaper(paper) {
     url: clean(paper.url),
     doi: clean(paper.doi),
     source: paper.source,
-    citation: formatCitation({
+    citation: formatCanonicalCitation({
       title,
       authors: paper.authors,
       year: paper.year,
@@ -715,23 +716,6 @@ function normalizePaper(paper) {
       doi: paper.doi
     })
   };
-}
-
-function formatCitation(paper) {
-  const authors = formatAuthors(paper.authors);
-  const year = paper.year ? ` (${paper.year})` : '';
-  const venue = paper.venue ? `. ${paper.venue}` : '';
-  const link = paper.doi || paper.url;
-  const linkPart = link ? `. ${link}` : '';
-
-  return `${authors}${year}. ${paper.title}${venue}${linkPart}`.trim();
-}
-
-function formatAuthors(authors = []) {
-  if (!authors.length) return 'Unknown authors';
-  if (authors.length === 1) return authors[0];
-  if (authors.length === 2) return `${authors[0]} and ${authors[1]}`;
-  return `${authors[0]} et al.`;
 }
 
 async function enrichWithModel({ topic, problem, query, papers, llmModel }) {
@@ -770,8 +754,7 @@ async function enrichWithModel({ topic, problem, query, papers, llmModel }) {
       if (!id) return;
       enrichedMap.set(id, {
         relevanceScore: Number(row.relevanceScore) || 0,
-        relevanceNote: clean(row.relevanceNote),
-        citation: clean(row.citation)
+        relevanceNote: clean(row.relevanceNote)
       });
     });
   }
@@ -787,7 +770,7 @@ async function enrichWithModel({ topic, problem, query, papers, llmModel }) {
       relevanceNote: isCitationOnlyRelevanceNote(relevanceNote)
         ? buildLocalRelevanceNote(paper, context)
         : relevanceNote,
-      citation: extra.citation || paper.citation
+      citation: paper.citation || formatCanonicalCitation(paper)
     };
   });
 

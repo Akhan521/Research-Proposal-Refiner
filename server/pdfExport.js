@@ -227,10 +227,14 @@ function ensureCompleteLatexDocument(source, title) {
     return normalizeCompleteLatexDocument(source);
   }
 
-  return String.raw`\documentclass[11pt]{article}
+  return String.raw`\PassOptionsToPackage{hyphens}{url}
+\documentclass[11pt]{article}
 \usepackage[margin=1in]{geometry}
 \usepackage[hidelinks]{hyperref}
+\urlstyle{same}
+\setlength{\emergencystretch}{3em}
 \usepackage{enumitem}
+\setlist[itemize]{leftmargin=*,itemsep=0.35em,parsep=0pt,topsep=0.35em,partopsep=0pt}
 \setlist{nosep}
 \title{${escapeLatex(title)}}
 \author{}
@@ -291,6 +295,26 @@ function ensureDefaultPreamble(lines) {
 
   if (!/\\usepackage(?:\[[^\]]*\])?\{enumitem\}/.test(source)) {
     next.push('\\usepackage{enumitem}');
+  }
+
+  if (!/\\PassOptionsToPackage\{hyphens\}\{url\}/.test(source)) {
+    next.unshift('\\PassOptionsToPackage{hyphens}{url}');
+  }
+
+  if (!/\\usepackage(?:\[[^\]]*\])?\{hyperref\}/.test(source) && !/\\usepackage(?:\[[^\]]*\])?\{url\}/.test(source)) {
+    next.push('\\usepackage[hyphens]{url}');
+  }
+
+  if (!/\\urlstyle\{same\}/.test(source)) {
+    next.push('\\urlstyle{same}');
+  }
+
+  if (!/\\emergencystretch/.test(source)) {
+    next.push('\\setlength{\\emergencystretch}{3em}');
+  }
+
+  if (!/\\setlist\[itemize\]/.test(source)) {
+    next.push('\\setlist[itemize]{leftmargin=*,itemsep=0.35em,parsep=0pt,topsep=0.35em,partopsep=0pt}');
   }
 
   return next;

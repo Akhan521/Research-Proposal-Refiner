@@ -4,6 +4,34 @@ import {
   DEFAULT_PROJECT_TOPIC,
   DEFAULT_REQUIREMENTS
 } from '../shared/mathlmDefaults.js';
+import {
+  appendReferenceValidationNote,
+  normalizeReferencesField
+} from './citationValidate.js';
+import {
+  buildReferencesLatexSection,
+  buildResourcesLatexSection,
+  ensureLayoutPreamble,
+  enforceReferencesInProposalLatex,
+  enforceResourcesInProposalLatex
+} from './latexLayout.js';
+import { normalizeResourcesField } from './resourceFormat.js';
+import {
+  buildAbstractLatexBody,
+  buildEvaluationLatexSection,
+  buildMilestonesLatexSection,
+  enforceAbstractInProposalLatex,
+  enforceEvaluationInProposalLatex,
+  enforceMilestonesInProposalLatex,
+  normalizeEvaluationField,
+  normalizeTimelineField
+} from './proposalSections.js';
+import {
+  appendDiagramValidationNote,
+  buildFigureEnvironment,
+  enforceFiguresInProposalLatex,
+  inferWorkflowStepsFromProject
+} from './latexDiagram.js';
 import { validateProposalLatex } from './latexValidate.js';
 
 const EMPTY_PROJECT_FOR_SERVER = createBlankProject();
@@ -33,13 +61,18 @@ Rules:
 - Return a complete LaTeX document with \\documentclass[11pt]{article}, 1-inch margins, title, sections, and bibliography/source notes.
 - Use compile-safe LaTeX. Avoid minted, shell-escape, external images, custom fonts, or packages that require extra system tools.
 - Do not use \\includegraphics or reference external image files. Build figures directly in LaTeX with text boxes, minipages, tabular layouts, lists, or simple arrows.
+- Workflow diagrams are rebuilt at export time from short plain-text node labels joined by forward arrows. Use 3--6 concise step names in execution order (e.g., "Problem Input $\\rightarrow$ Step Generator $\\rightarrow$ Policy Update"); do not put LaTeX formatting commands inside node labels. Backward arrows, out-of-order steps, and leaked markup are corrected automatically.
 - Ensure LaTeX compiles under Tectonic: escape special characters in text (\\&, \\%, \\#, \\_, \\{, \\}) and avoid stray $.
 - Write the final artifact as a research proposal, not as a short course implementation report.
 - Keep the proposed research plan credible, appropriately scoped, and supported by milestones, resources, risks, and evaluation criteria.
 - Mark unsupported claims as assumptions.
 - Include a concrete agent workflow when the method involves an agent.
 - Include at least one LaTeX-native figure, diagram, workflow chart, or architecture sketch with a caption.
-- Use citation strings provided in project.references when they look like real retrieved sources (title, authors, year, URL/DOI). Do not invent additional citations.
+- Use only citation strings from project.references in the References section. Do not invent, rename, or add citations that are not listed in project.references. In-text mentions should align with those sources.
+- The Resources section is rebuilt from project.resources at export time. Keep that field organized by category (computing, software, data, budget/support) with concrete, feasibility-oriented items. Do not invent resources that are not listed in project.resources.
+- The abstract is rebuilt at export time from project fields. Write NSF-style prose: clear problem/gap, specific objective, credible approach, evaluation criteria, and expected outcomes (roughly 150--250 words).
+- Expected Results and Research Milestones are rebuilt from project.timeline. Use milestone lines with optional timing (e.g., "Milestone 1 (Weeks 1--3): deliverable") plus explicit expected results.
+- The Evaluation Plan is rebuilt from project.evaluation. Include research questions, metrics/benchmarks, baselines, ablations, analysis plan, and success criteria with enough detail for formal review.
 - Mark only unsupported claims as assumptions when references are missing or vague.
 - If the project provides a "layAbstract", add a short "Plain-Language Summary" section near the top that uses that accessible text so non-expert readers can understand the work.`;
 
@@ -91,7 +124,13 @@ Return strict JSON:
   "updates": ["short state update"]
 }
 
-First infer concrete proposal data from the rough idea. Give the user suggested data and selectable options before asking open-ended questions. Ask open-ended questions only for information that cannot be reasonably inferred.`;
+First infer concrete proposal data from the rough idea. Give the user suggested data and selectable options before asking open-ended questions. Ask open-ended questions only for information that cannot be reasonably inferred.
+
+When task is "refine-structure", the user skipped or rejected a suggestion or decision as off-topic or unhelpful. Honor their guidance exactly. Regenerate fresh fieldSuggestions and/or decisions aligned with project.title and project.topic. Do not repeat rejected content. Keep returned project fields identical to the input project unless guidance requires a small topic-alignment fix. Prefer concrete, on-topic suggestions over generic placeholders.
+
+For the resources field, write formal proposal-ready entries grouped by category (Computing and Infrastructure, Software and Development Tools, Data and Model Artifacts, Budget and Institutional Support). Use one line per item in the form "Category: specific resource and brief justification."
+
+For timeline, write milestone lines ("Milestone N (timing): deliverable") and a leading expected-results summary. For evaluation, write labeled lines for research questions, metrics, baselines, ablations, analysis plan, and success criteria.`;
 
 export async function startAgentSession(payload) {
   const project = normalizePayload(payload);
@@ -185,17 +224,157 @@ export async function answerAgentQuestion(payload) {
   };
 }
 
+export async function refineAgentStructure(payload) {
+  const project = normalizePayload(payload.project || payload);
+  const checklist = extractChecklist(project.requirements || payload.requirements || DEFAULT_REQUIREMENTS);
+  const guidance = clean(payload.guidance);
+  const scope = clean(payload.scope) || 'both';
+  const rejected = payload.rejected || null;
+  const currentFieldSuggestions = Array.isArray(payload.fieldSuggestions) ? payload.fieldSuggestions : [];
+  const currentDecisions = Array.isArray(payload.decisions) ? payload.decisions : [];
+
+  if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
+    try {
+      const result = await refineProjectWithApi({
+        task: 'refine-structure',
+        project,
+        checklist,
+        activeQuestion: null,
+        answer: '',
+        guidance,
+        scope,
+        rejected,
+        currentFieldSuggestions,
+        currentDecisions,
+        llmModel: payload.llmModel
+      });
+
+      return {
+        ...result,
+        project,
+        checklist,
+        runMessage:
+          result.updates.join(' ') ||
+          `Regenerated structuring ideas${guidance ? ' using your guidance' : ''}.`
+      };
+    } catch (error) {
+      const rebuiltSuggestions = buildFieldSuggestions(project);
+      const rebuiltDecisions = buildDecisionCards(project);
+      const fieldSuggestions =
+        payload.scope === 'suggestion' && currentFieldSuggestions.length
+          ? mergeRegeneratedSuggestionsInOrder(
+            currentFieldSuggestions,
+            rebuiltSuggestions,
+            rejected,
+            payload.rejectedIndex
+          )
+          : filterRejectedStructureItem(
+            rebuiltSuggestions,
+            rejected?.type === 'suggestion' ? rejected.item : null,
+            'suggestion'
+          );
+      const decisions =
+        payload.scope === 'decision' && currentDecisions.length
+          ? mergeRegeneratedDecisionsInOrder(currentDecisions, rebuiltDecisions, rejected?.item?.id)
+          : filterRejectedStructureItem(
+            rebuiltDecisions,
+            rejected?.type === 'decision' ? rejected.item : null,
+            'decision'
+          );
+      const detail = error instanceof Error ? error.message : String(error);
+
+      return {
+        mode: 'local-fallback',
+        provider: 'template',
+        project,
+        checklist,
+        suggestedProject: projectFromSuggestions(project, fieldSuggestions),
+        fieldSuggestions,
+        decisions,
+        questions: buildQuestionObjects(project),
+        updates: [
+          guidance ? `Noted guidance: ${guidance}` : 'Regenerated structuring ideas locally.',
+          `Model refine failed (${detail}). Used on-topic template suggestions instead.`
+        ],
+        runMessage: `Regenerated ${fieldSuggestions.length} suggestion(s) and ${decisions.length} decision card(s) locally after a model error.`,
+        transcript: {
+          prompt: { task: 'refine-structure', project, guidance, scope, rejected },
+          rawResponse: detail
+        }
+      };
+    }
+  }
+
+  const rebuiltSuggestions = buildFieldSuggestions(project);
+  const rebuiltDecisions = buildDecisionCards(project);
+  const fieldSuggestions =
+    scope === 'suggestion' && currentFieldSuggestions.length
+      ? mergeRegeneratedSuggestionsInOrder(
+        currentFieldSuggestions,
+        rebuiltSuggestions,
+        rejected,
+        payload.rejectedIndex
+      )
+      : filterRejectedStructureItem(
+        rebuiltSuggestions,
+        rejected?.type === 'suggestion' ? rejected.item : null,
+        'suggestion'
+      );
+  const decisions =
+    scope === 'decision' && currentDecisions.length
+      ? mergeRegeneratedDecisionsInOrder(currentDecisions, rebuiltDecisions, rejected?.item?.id)
+      : filterRejectedStructureItem(
+        rebuiltDecisions,
+        rejected?.type === 'decision' ? rejected.item : null,
+        'decision'
+      );
+
+  return {
+    mode: 'local-fallback',
+    provider: 'template',
+    project,
+    checklist,
+    suggestedProject: projectFromSuggestions(project, fieldSuggestions),
+    fieldSuggestions,
+    decisions,
+    questions: buildQuestionObjects(project),
+    updates: guidance
+      ? [`Noted guidance: ${guidance}`, 'Regenerated structuring ideas from the current project state.']
+      : ['Regenerated structuring ideas from the current project state.'],
+    runMessage: `Regenerated ${fieldSuggestions.length} suggestion(s) and ${decisions.length} decision card(s) locally.`,
+    transcript: {
+      prompt: { task: 'refine-structure', project, guidance, scope, rejected },
+      rawResponse: 'Generated by local fallback because LLM_API_KEY or LLM_API_URL is not configured.'
+    }
+  };
+}
+
 export async function generateProposal(payload) {
   const project = normalizePayload(payload);
-  const requirements = project.requirements || DEFAULT_REQUIREMENTS;
+  const knownPapers = Array.isArray(payload.literaturePapers) ? payload.literaturePapers : [];
+  const normalizedReferences = normalizeReferencesField(project.references, knownPapers);
+  const normalizedResources = normalizeResourcesField(project.resources);
+  const normalizedTimeline = normalizeTimelineField(project.timeline, project);
+  const normalizedEvaluation = normalizeEvaluationField(project.evaluation, project);
+  const projectForDraft = {
+    ...project,
+    references: normalizedReferences.references || project.references,
+    resources: normalizedResources.resources || project.resources,
+    timeline: normalizedTimeline.timeline || project.timeline,
+    evaluation: normalizedEvaluation.evaluation || project.evaluation
+  };
+  const requirements = projectForDraft.requirements || DEFAULT_REQUIREMENTS;
   const checklist = extractChecklist(requirements);
 
   const result =
     process.env.LLM_API_KEY && process.env.LLM_API_URL
-      ? await generateWithApi(project, checklist, payload.llmModel)
-      : generateLocally(project, checklist);
+      ? await generateWithApi(projectForDraft, checklist, payload.llmModel)
+      : generateLocally(projectForDraft, checklist);
 
-  return finalizeProposalOutput(result, project, checklist);
+  return finalizeProposalOutput(result, projectForDraft, checklist, {
+    referenceReport: normalizedReferences.report,
+    knownPapers
+  });
 }
 
 export function resolveLlmModel(override) {
@@ -262,9 +441,46 @@ async function refineProjectWithApi(payload) {
     temperature: 0.2
   });
   const parsed = parseJsonContent(content);
-  const nextProject = mergeProject(payload.project, normalizePayload(parsed.project || {}));
-  const fieldSuggestions = normalizeFieldSuggestions(parsed.fieldSuggestions, nextProject);
-  const decisions = normalizeDecisions(parsed.decisions, nextProject);
+  const nextProject =
+    payload.task === 'refine-structure'
+      ? payload.project
+      : mergeProject(payload.project, normalizePayload(parsed.project || {}));
+  let fieldSuggestions = normalizeFieldSuggestions(parsed.fieldSuggestions, nextProject);
+  let decisions = normalizeDecisions(parsed.decisions, nextProject);
+
+  if (payload.task === 'refine-structure') {
+    const rejectedId = clean(payload.rejected?.item?.id);
+
+    if (payload.scope === 'suggestion' && Array.isArray(payload.currentFieldSuggestions) && payload.currentFieldSuggestions.length) {
+      fieldSuggestions = mergeRegeneratedSuggestionsInOrder(
+        payload.currentFieldSuggestions,
+        fieldSuggestions,
+        payload.rejected,
+        payload.rejectedIndex
+      );
+      if (Array.isArray(payload.currentDecisions) && payload.currentDecisions.length) {
+        decisions = payload.currentDecisions;
+      }
+    } else if (payload.scope === 'decision' && Array.isArray(payload.currentDecisions) && payload.currentDecisions.length) {
+      decisions = mergeRegeneratedDecisionsInOrder(payload.currentDecisions, decisions, rejectedId);
+      if (Array.isArray(payload.currentFieldSuggestions) && payload.currentFieldSuggestions.length) {
+        fieldSuggestions = payload.currentFieldSuggestions;
+      }
+    } else {
+      if (Array.isArray(payload.currentFieldSuggestions) && payload.currentFieldSuggestions.length) {
+        fieldSuggestions = mergeRegeneratedSuggestionsInOrder(
+          payload.currentFieldSuggestions,
+          fieldSuggestions,
+          payload.rejected,
+          payload.rejectedIndex
+        );
+      }
+      if (Array.isArray(payload.currentDecisions) && payload.currentDecisions.length) {
+        decisions = mergeRegeneratedDecisionsInOrder(payload.currentDecisions, decisions, rejectedId);
+      }
+    }
+  }
+
   const questions = normalizeQuestions(parsed.questions, nextProject);
 
   return {
@@ -404,23 +620,51 @@ async function callOpenAiCompatible({ systemPrompt, payload, model, temperature 
   return readModelContent(data);
 }
 
-async function finalizeProposalOutput(result, project, checklist) {
+async function finalizeProposalOutput(result, project, checklist, options = {}) {
   const title = project.title || project.topic || 'proposal';
   const validation = await validateProposalLatex(result.proposalLatex, title, {
     fallbackLatex: buildLocalProposalLatex(project)
   });
 
+  const resourceEnforcement = enforceResourcesInProposalLatex(
+    validation.latex,
+    project.resources || ''
+  );
+  const referenceEnforcement = enforceReferencesInProposalLatex(
+    resourceEnforcement.latex,
+    project.references || ''
+  );
+  const abstractEnforcement = enforceAbstractInProposalLatex(referenceEnforcement.latex, project);
+  const milestoneEnforcement = enforceMilestonesInProposalLatex(
+    abstractEnforcement.latex,
+    project.timeline || '',
+    project
+  );
+  const evaluationEnforcement = enforceEvaluationInProposalLatex(
+    milestoneEnforcement.latex,
+    project.evaluation || '',
+    project
+  );
+  const figureEnforcement = enforceFiguresInProposalLatex(evaluationEnforcement.latex, project);
+  const layoutLatex = ensureLayoutPreamble(figureEnforcement.latex);
+
   const complianceMatrix = buildComplianceMatrixFromDraft(
     checklist,
     project,
-    validation.latex,
+    layoutLatex,
     result.complianceMatrix
   );
-  const evaluationReport = appendLatexValidationNote(result.evaluationReport, validation);
+  let evaluationReport = appendLatexValidationNote(result.evaluationReport, validation);
+  evaluationReport = appendReferenceValidationNote(
+    evaluationReport,
+    options.referenceReport,
+    referenceEnforcement
+  );
+  evaluationReport = appendDiagramValidationNote(evaluationReport, figureEnforcement);
 
   return {
     ...result,
-    proposalLatex: validation.latex,
+    proposalLatex: layoutLatex,
     complianceMatrix,
     evaluationReport,
     latexValidation: {
@@ -429,6 +673,15 @@ async function finalizeProposalOutput(result, project, checklist) {
       usedFallback: validation.usedFallback,
       warning: validation.warning || '',
       attempts: validation.attempts || []
+    },
+    referenceValidation: {
+      entryCount: referenceEnforcement.entryCount,
+      sectionReplaced: referenceEnforcement.replaced,
+      ...(options.referenceReport || {})
+    },
+    diagramValidation: {
+      figuresRebuilt: figureEnforcement.replaced || 0,
+      validations: figureEnforcement.validations || []
     }
   };
 }
@@ -508,10 +761,14 @@ function buildLocalProposalLatex(project) {
   const resources = project.resources || PROJECT_FALLBACKS.resources;
   const references = project.references || PROJECT_FALLBACKS.references;
 
-  return String.raw`\documentclass[11pt]{article}
+  return String.raw`\PassOptionsToPackage{hyphens}{url}
+\documentclass[11pt]{article}
 \usepackage[margin=1in]{geometry}
 \usepackage[hidelinks]{hyperref}
+\urlstyle{same}
+\setlength{\emergencystretch}{3em}
 \usepackage{enumitem}
+\setlist[itemize]{leftmargin=*,itemsep=0.35em,parsep=0pt,topsep=0.35em,partopsep=0pt}
 \setlist{nosep}
 \title{${escapeLatex(title)}}
 \author{}
@@ -521,7 +778,7 @@ function buildLocalProposalLatex(project) {
 \maketitle
 
 \begin{abstract}
-This project studies whether reinforcement learning with dense, process-based rewards and optional code verification can improve multi-step mathematical reasoning in a compact language model beyond a supervised-only baseline.
+${buildAbstractLatexBody(project)}
 \end{abstract}
 ${plainLanguageSummarySection(project)}
 \section{Motivation and Gap}
@@ -544,22 +801,24 @@ ${latexParagraph(method)}
 \end{enumerate}
 
 \section{Figure}
-\begin{figure}[h]
-\centering
-\fbox{\begin{minipage}{0.9\linewidth}
-\centering
-Math prompt $\rightarrow$ multi-sample rollouts $\rightarrow$ dense process + code rewards $\rightarrow$ group-relative RL update $\rightarrow$ curriculum schedule $\rightarrow$ majority-vote answer
-\end{minipage}}
-\caption{Training loop: process rewards, optional code verification, curriculum, and self-consistency.}
-\end{figure}
+${buildFigureEnvironment(
+    inferWorkflowStepsFromProject({
+      method:
+        'Math prompt $\\rightarrow$ multi-sample rollouts $\\rightarrow$ dense process rewards $\\rightarrow$ group-relative RL update $\\rightarrow$ curriculum schedule $\\rightarrow$ majority-vote answer'
+    }),
+    'Training workflow: process rewards, code verification, curriculum, and self-consistency.',
+    '[h]',
+    {
+      title: 'Training Workflow Diagram',
+      footnote: '(Iterative loop until convergence)'
+    }
+  )}
 
 \section{Expected Results and Research Milestones}
-${latexParagraph(timeline)}
-
-Expected result: a reproducible training codebase and experiment log showing which reward and curriculum choices move math reasoning accuracy from the supervised baseline toward the best RL configuration.
+${buildMilestonesLatexSection(timeline, project)}
 
 \section{Evaluation Plan}
-${latexParagraph(evaluation)}
+${buildEvaluationLatexSection(evaluation, project)}
 
 \section{Risks and Mitigation}
 \begin{itemize}
@@ -570,10 +829,10 @@ ${latexParagraph(evaluation)}
 \end{itemize}
 
 \section{Resources}
-${latexParagraph(resources)}
+${buildResourcesLatexSection(resources)}
 
 \section{References and Assumptions}
-${latexParagraph(references)}
+${buildReferencesLatexSection(references)}
 
 \end{document}
 `;
@@ -673,6 +932,112 @@ function integrateAnswerLocally(project, answer, question) {
   return { project: nextProject, updates };
 }
 
+function filterRejectedStructureItem(items, rejected, type) {
+  if (!Array.isArray(items) || !rejected) {
+    return Array.isArray(items) ? items : [];
+  }
+
+  if (type === 'suggestion') {
+    const field = clean(rejected.field);
+    const value = clean(rejected.value);
+    return items.filter((item) => !(clean(item.field) === field && clean(item.value) === value));
+  }
+
+  const rejectedId = clean(rejected.id);
+  if (type === 'decision' && rejectedId) {
+    return items.filter((item) => clean(item.id) !== rejectedId);
+  }
+
+  return items;
+}
+
+function pickReplacementSuggestion(incomingSuggestions, rejectedItem, slotItem) {
+  if (!Array.isArray(incomingSuggestions) || !incomingSuggestions.length) {
+    return null;
+  }
+
+  const field = clean(rejectedItem?.field) || clean(slotItem?.field);
+  if (field) {
+    const match = incomingSuggestions.find((item) => clean(item.field) === field);
+    if (match) return match;
+  }
+
+  return incomingSuggestions[0];
+}
+
+function mergeRegeneratedSuggestionsInOrder(currentSuggestions, incomingSuggestions, rejected, rejectedIndex) {
+  if (!Array.isArray(currentSuggestions) || !currentSuggestions.length) {
+    return Array.isArray(incomingSuggestions) ? incomingSuggestions : [];
+  }
+  if (!Array.isArray(incomingSuggestions) || !incomingSuggestions.length) {
+    return currentSuggestions;
+  }
+
+  const replaceIndex =
+    Number.isFinite(Number(rejectedIndex)) &&
+      Number(rejectedIndex) >= 0 &&
+      Number(rejectedIndex) < currentSuggestions.length
+      ? Number(rejectedIndex)
+      : currentSuggestions.findIndex((item) => clean(item.field) === clean(rejected?.item?.field));
+
+  if (replaceIndex < 0) {
+    return currentSuggestions;
+  }
+
+  const replacement = pickReplacementSuggestion(
+    incomingSuggestions,
+    rejected?.item,
+    currentSuggestions[replaceIndex]
+  );
+
+  if (!replacement) {
+    return currentSuggestions;
+  }
+
+  return currentSuggestions.map((item, index) =>
+    index === replaceIndex
+      ? {
+        ...item,
+        ...replacement,
+        field: clean(replacement.field) || clean(item.field),
+        label: clean(replacement.label) || clean(item.label),
+        value: clean(replacement.value) || clean(item.value),
+        confidence: clean(replacement.confidence) || clean(item.confidence) || 'Medium',
+        reason: clean(replacement.reason) || clean(item.reason)
+      }
+      : item
+  );
+}
+
+function mergeRegeneratedDecisionsInOrder(currentDecisions, incomingDecisions, rejectedId) {
+  if (!Array.isArray(currentDecisions) || !currentDecisions.length) {
+    return Array.isArray(incomingDecisions) ? incomingDecisions : [];
+  }
+  if (!clean(rejectedId) || !Array.isArray(incomingDecisions) || !incomingDecisions.length) {
+    return currentDecisions;
+  }
+
+  const previousDecision = currentDecisions.find((decision) => clean(decision.id) === clean(rejectedId));
+  const replacement =
+    incomingDecisions.find((decision) => clean(decision.id) === clean(rejectedId)) ||
+    incomingDecisions.find(
+      (decision) => previousDecision && clean(decision.field) === clean(previousDecision.field)
+    ) ||
+    incomingDecisions[0];
+
+  return currentDecisions.map((decision) =>
+    clean(decision.id) === clean(rejectedId)
+      ? {
+        id: clean(replacement.id) || clean(decision.id),
+        title: clean(replacement.title) || clean(decision.title),
+        field: clean(replacement.field) || clean(decision.field),
+        question: clean(replacement.question) || clean(decision.question),
+        options: Array.isArray(replacement.options) ? replacement.options : decision.options
+      }
+      : decision
+  );
+}
+
 function buildFieldSuggestions(project) {
   const topic = project.title || project.topic || DEFAULT_PROJECT_TOPIC;
   const suggestions = [
@@ -702,21 +1067,21 @@ function buildFieldSuggestions(project) {
       label: 'Evaluation Plan',
       value: project.evaluation || PROJECT_FALLBACKS.evaluation,
       confidence: project.evaluation ? 'High' : 'Medium',
-      reason: 'Compare supervised, PPO-style, and process-reward RL configurations on exact-match accuracy.'
+      reason: 'Specify research questions, metrics, baselines, ablations, analysis plan, and success criteria.'
     },
     {
       field: 'timeline',
       label: 'Research Milestones',
       value: project.timeline || PROJECT_FALLBACKS.timeline,
       confidence: project.timeline ? 'High' : 'Medium',
-      reason: 'Show a feasible path from baseline reproduction to final ablations.'
+      reason: 'List expected results plus timed milestones with verifiable deliverables.'
     },
     {
       field: 'resources',
       label: 'Resources',
       value: project.resources || PROJECT_FALLBACKS.resources,
       confidence: project.resources ? 'High' : 'Medium',
-      reason: 'List model checkpoint, dataset, GPUs, and training codebase.'
+      reason: 'Group computing, software, datasets or checkpoints, and course or budget support into formal category lines.'
     },
     {
       field: 'references',

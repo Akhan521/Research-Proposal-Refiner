@@ -124,7 +124,10 @@ function workspaceViewBadge(viewId, context) {
   switch (viewId) {
     case 'structure':
       if (fieldSuggestions.length) return `${acceptedSuggestionCount}/${fieldSuggestions.length}`;
-      if (decisions.length) return `${decisions.length} open`;
+      if (decisions.length) {
+        const open = decisions.filter((decision) => !isDecisionResolved(decision)).length;
+        return open ? `${open} open` : `${decisions.length} resolved`;
+      }
       return '';
     case 'research':
       return literature?.papers?.length ? `${literature.papers.length} papers` : '';
@@ -169,6 +172,11 @@ function App() {
   const [lastInsertedLiteratureSummary, setLastInsertedLiteratureSummary] = useState('');
   const [llmModel, setLlmModel] = useState('');
   const [llmConfig, setLlmConfig] = useState(null);
+  const [suggestionGuidance, setSuggestionGuidance] = useState('');
+  const [decisionGuidance, setDecisionGuidance] = useState('');
+  const [suggestionReviseOpen, setSuggestionReviseOpen] = useState(false);
+  const [decisionReviseOpen, setDecisionReviseOpen] = useState(false);
+  const [refiningScope, setRefiningScope] = useState(null);
   const problemFieldRef = useRef(null);
   const workspaceMainRef = useRef(null);
   const lastLiteratureSummaryRef = useRef('');
@@ -186,6 +194,8 @@ function App() {
   const acceptedSuggestionCount = fieldSuggestions.filter((suggestion) =>
     isSuggestionApplied(project[suggestion.field], suggestion.value)
   ).length;
+  const openDecisionCount = decisions.filter((decision) => !isDecisionResolved(decision)).length;
+  const resolvedDecisionCount = decisions.length - openDecisionCount;
   const currentSuggestion = fieldSuggestions[suggestionIndex] || null;
   const currentDecision = decisions[decisionIndex] || null;
   const currentQuestion = questions[0];
@@ -240,6 +250,16 @@ function App() {
       setFocusedProjectField(null);
     }
   }, [activeWorkspaceView, focusedProjectField]);
+
+  useEffect(() => {
+    setSuggestionReviseOpen(false);
+    setSuggestionGuidance('');
+  }, [suggestionIndex]);
+
+  useEffect(() => {
+    setDecisionReviseOpen(false);
+    setDecisionGuidance('');
+  }, [decisionIndex]);
 
   useEffect(() => {
     if (!memoryReady || !memoryHydrated) return;
@@ -380,6 +400,7 @@ function App() {
         ...project,
         topic: project.topic || project.title,
         requirements: DEFAULT_REQUIREMENTS,
+        literaturePapers: literature?.papers ?? [],
         ...buildLlmExtras(llmModel)
       });
 
@@ -430,24 +451,27 @@ function App() {
   }
 
   function addPaperToReferences(paper) {
-    const citation = paper?.citation;
-    if (!citation) return;
+    if (!paper?.citation) return;
+
+    let added = false;
 
     setProject((current) => {
-      const base = String(current.references || '').trim();
-      if (base.includes(citation)) return current;
-
-      return {
-        ...current,
-        references: base ? `${base}\n${citation}` : citation
-      };
+      const { references, addedCount } = mergeCitationsIntoReferences(current.references, [paper]);
+      if (!addedCount) return current;
+      added = true;
+      return { ...current, references };
     });
+
+    if (!added) return;
+
     clearArtifacts();
     setRunLog((current) => [...current, logEntry('Literature', `Added citation: ${paper.title}.`)]);
   }
 
   function insertRelatedWork(paragraph) {
     const text = String(paragraph ?? literature?.relatedWorkParagraph ?? '').trim();
+    const papers = literature?.papers ?? [];
+
     if (!text) {
       setLiteratureNotice('No prior-research summary is available yet. Run a literature search first.');
       return;
@@ -461,21 +485,33 @@ function App() {
       const hadPreviousBlock =
         Boolean(previous && original.includes(previous)) || hasAutoLiteratureSummary(original);
       const nextProblem = applyLiteratureSummaryToProblem(current.problem, text, previous);
+      const { references: nextReferences, addedCount: citationsAdded } = mergeCitationsIntoReferences(
+        current.references,
+        papers
+      );
+      const problemChanged = nextProblem !== original;
+      const referencesChanged = nextReferences !== String(current.references || '').trim();
 
-      if (nextProblem === original) {
+      if (!problemChanged && !referencesChanged) {
         literatureInsertMetaRef.current = { type: 'unchanged' };
         return current;
       }
 
-      lastLiteratureSummaryRef.current = text;
+      if (problemChanged) {
+        lastLiteratureSummaryRef.current = text;
+      }
+
       literatureInsertMetaRef.current = {
         type: 'changed',
-        replaced: hadPreviousBlock
+        replaced: hadPreviousBlock,
+        problemChanged,
+        citationsAdded
       };
 
       return {
         ...current,
-        problem: nextProblem
+        problem: problemChanged ? nextProblem : current.problem,
+        references: referencesChanged ? nextReferences : current.references
       };
     });
 
@@ -483,25 +519,18 @@ function App() {
       const meta = literatureInsertMetaRef.current;
 
       if (meta?.type === 'changed') {
-        setLastInsertedLiteratureSummary(text);
-        setLiteratureNotice(
-          meta.replaced
-            ? 'Updated Problem statement with the latest literature summary.'
-            : 'Added to Problem statement — see the Problem field below.'
-        );
+        if (meta.problemChanged) {
+          setLastInsertedLiteratureSummary(text);
+        }
+        clearArtifacts();
+        setLiteratureNotice(buildLiteratureInsertNotice(meta));
         setRunLog((current) => [
           ...current,
-          logEntry(
-            'Literature',
-            meta.replaced
-              ? 'Replaced prior literature summary in Problem statement.'
-              : 'Inserted relevant-papers summary into Problem statement.'
-          )
+          logEntry('Literature', buildLiteratureInsertLogMessage(meta))
         ]);
       } else if (meta?.type === 'unchanged') {
-        setLiteratureNotice('Problem statement already includes the latest literature summary.');
+        setLiteratureNotice('Problem statement and Sources already include the latest literature summary and citations.');
       }
-
     });
   }
 
@@ -565,19 +594,23 @@ function App() {
     runExplain(explainLevel);
   }
 
-  function acceptSuggestion(suggestion) {
+  function acceptSuggestion(suggestion, { mode = 'merge' } = {}) {
     const field = suggestion.field;
     const incoming = String(suggestion.value || '').trim();
+    const existingBeforeAccept = String(project[field] || '').trim();
+    const shouldAdvance = mode === 'merge' && !existingBeforeAccept;
     let merged = false;
 
     setProject((current) => {
       const existing = String(current[field] || '').trim();
       const value =
-        !existing
+        mode === 'replace'
           ? incoming
-          : existing === incoming
-            ? existing
-            : mergeAcceptedFieldValue(existing, incoming);
+          : !existing
+            ? incoming
+            : existing === incoming
+              ? existing
+              : mergeAcceptedFieldValue(existing, incoming);
 
       if (value === existing) {
         return current;
@@ -595,7 +628,12 @@ function App() {
       clearArtifacts();
       setRunLog((current) => [
         ...current,
-        logEntry('Accept', `Merged ${suggestion.label || suggestion.field} into existing field content.`)
+        logEntry(
+          'Accept',
+          mode === 'replace'
+            ? `Replaced ${suggestion.label || suggestion.field} with the latest suggestion.`
+            : `Merged ${suggestion.label || suggestion.field} into existing field content.`
+        )
       ]);
     } else {
       setRunLog((current) => [
@@ -604,13 +642,25 @@ function App() {
       ]);
     }
 
-    advanceSuggestion();
+    if (shouldAdvance) {
+      advanceSuggestion();
+    }
   }
 
   function skipSuggestion() {
     if (!currentSuggestion) return;
-    advanceSuggestion();
-    setRunLog((current) => [...current, logEntry('Skip', `Skipped ${currentSuggestion.label || currentSuggestion.field}.`)]);
+
+    const label = currentSuggestion.label || currentSuggestion.field;
+    const index = suggestionIndex;
+
+    setFieldSuggestions((current) => {
+      const next = current.filter((_, itemIndex) => itemIndex !== index);
+      setSuggestionIndex((currentIndex) => Math.min(currentIndex, Math.max(next.length - 1, 0)));
+      return next;
+    });
+    setSuggestionReviseOpen(false);
+    setSuggestionGuidance('');
+    setRunLog((current) => [...current, logEntry('Skip', `Skipped ${label}.`)]);
   }
 
   function advanceSuggestion() {
@@ -620,16 +670,12 @@ function App() {
   function chooseOption(decision, option) {
     const field = decision.field;
     const incoming = String(option.value || '').trim();
+    const previousResolvedValue = String(decision.resolvedValue || '').trim();
     let merged = false;
 
     setProject((current) => {
       const existing = String(current[field] || '').trim();
-      const value =
-        !existing
-          ? incoming
-          : existing === incoming
-            ? existing
-            : mergeAcceptedFieldValue(existing, incoming);
+      const value = applyDecisionOptionToProject(existing, incoming, previousResolvedValue);
 
       if (value === existing) {
         return current;
@@ -646,22 +692,134 @@ function App() {
     if (merged) {
       clearArtifacts();
     }
-    setDecisions((current) => {
-      const next = current.filter((item) => item.id !== decision.id);
-      setDecisionIndex((index) => Math.min(index, Math.max(next.length - 1, 0)));
-      return next;
-    });
-    setRunLog((current) => [...current, logEntry('Decision', `Selected ${option.label} for ${decision.title}.`)]);
+
+    setDecisions((current) =>
+      current.map((item) =>
+        item.id === decision.id
+          ? {
+            ...item,
+            resolvedOptionLabel: option.label,
+            resolvedValue: option.value
+          }
+          : item
+      )
+    );
+
+    setRunLog((current) => [
+      ...current,
+      logEntry(
+        'Decision',
+        previousResolvedValue
+          ? `Updated ${decision.title} to ${option.label}.`
+          : `Selected ${option.label} for ${decision.title}.`
+      )
+    ]);
   }
 
   function skipDecision() {
     if (!currentDecision) return;
-    advanceDecision();
-    setRunLog((current) => [...current, logEntry('Skip', `Skipped ${currentDecision.title}.`)]);
+
+    const title = currentDecision.title;
+    const id = currentDecision.id;
+
+    setDecisions((current) => {
+      const next = current.filter((item) => item.id !== id);
+      setDecisionIndex((index) => Math.min(index, Math.max(next.length - 1, 0)));
+      return next;
+    });
+    setDecisionReviseOpen(false);
+    setDecisionGuidance('');
+    setRunLog((current) => [...current, logEntry('Skip', `Skipped ${title}.`)]);
   }
 
   function advanceDecision() {
     setDecisionIndex((current) => Math.min(current + 1, Math.max(decisions.length - 1, 0)));
+  }
+
+  async function regenerateStructure(scope) {
+    const guidance = (scope === 'suggestion' ? suggestionGuidance : decisionGuidance).trim();
+    const rejected =
+      scope === 'suggestion' && currentSuggestion
+        ? { type: 'suggestion', item: currentSuggestion }
+        : scope === 'decision' && currentDecision
+          ? { type: 'decision', item: currentDecision }
+          : null;
+
+    if (!rejected) {
+      setError('Open a suggestion or decision card before regenerating.');
+      return;
+    }
+
+    setStatus('refining');
+    setRefiningScope(scope);
+    setError('');
+
+    const topic = String(project.topic || project.title || topicInput || '').trim();
+    const projectPayload = {
+      ...project,
+      topic: topic || project.topic,
+      title: project.title || topic
+    };
+
+    const rejectedId = rejected?.type === 'decision' ? rejected.item?.id : null;
+    const rejectedField = rejected?.type === 'suggestion' ? rejected.item?.field : null;
+    const currentSuggestionIndex = suggestionIndex;
+    const currentDecisionIndex = decisionIndex;
+
+    try {
+      const data = await postJson('/api/agent/refine-structure', {
+        project: projectPayload,
+        topic,
+        requirements: DEFAULT_REQUIREMENTS,
+        guidance,
+        scope,
+        rejected,
+        rejectedIndex: scope === 'suggestion' ? currentSuggestionIndex : undefined,
+        fieldSuggestions,
+        decisions,
+        ...buildLlmExtras(llmModel)
+      });
+
+      const nextSuggestions = mergeSuggestionsPreservingOrder(
+        fieldSuggestions,
+        data.fieldSuggestions || [],
+        currentSuggestionIndex,
+        rejectedField
+      );
+      const nextDecisionsOrdered = mergeDecisionsPreservingOrder(decisions, data.decisions || [], rejectedId);
+      const nextDecisions = mergeDecisionsAfterRegenerate(decisions, nextDecisionsOrdered, rejectedId);
+
+      setFieldSuggestions(nextSuggestions);
+      setDecisions(nextDecisions);
+      if (Array.isArray(data.questions)) {
+        setQuestions(data.questions);
+      }
+      setSuggestionIndex(Math.min(currentSuggestionIndex, Math.max(nextSuggestions.length - 1, 0)));
+      setDecisionIndex(Math.min(currentDecisionIndex, Math.max(nextDecisions.length - 1, 0)));
+      setSuggestionReviseOpen(false);
+      setDecisionReviseOpen(false);
+      setSuggestionGuidance('');
+      setDecisionGuidance('');
+      clearArtifacts();
+      setRunLog((current) => [
+        ...current,
+        logEntry('Structure', data.runMessage || 'Regenerated structuring ideas from your guidance.'),
+        logEntry(
+          'Decide',
+          `Review ${nextSuggestions.length} suggestion(s) and ${nextDecisions.length} decision card(s).`
+        )
+      ]);
+    } catch (requestError) {
+      const message = readError(requestError);
+      if (/cannot post|404|not found/i.test(message)) {
+        setError('Structure refine API is unavailable. Restart the dev server (npm run dev) and try again.');
+      } else {
+        setError(message);
+      }
+    } finally {
+      setStatus('idle');
+      setRefiningScope(null);
+    }
   }
 
   function updateProjectField(field, value) {
@@ -710,6 +868,11 @@ function App() {
     setLastInsertedLiteratureSummary('');
     lastLiteratureSummaryRef.current = '';
     setFocusedProjectField(null);
+    setSuggestionReviseOpen(false);
+    setDecisionReviseOpen(false);
+    setSuggestionGuidance('');
+    setDecisionGuidance('');
+    setRefiningScope(null);
   }
 
   function downloadLatex() {
@@ -990,24 +1153,65 @@ function App() {
                           <p>{currentSuggestion.value}</p>
                           <small>{currentSuggestion.reason}</small>
                           <div className="deck-actions">
-                            <button
-                              className={
-                                isSuggestionApplied(project[currentSuggestion.field], currentSuggestion.value)
-                                  ? 'secondary accepted'
-                                  : 'primary'
-                              }
-                              type="button"
-                              onClick={() => acceptSuggestion(currentSuggestion)}
-                            >
-                              <CheckCircle2 size={16} aria-hidden="true" />
-                              {isSuggestionApplied(project[currentSuggestion.field], currentSuggestion.value)
-                                ? 'Accepted'
-                                : 'Accept and Next'}
-                            </button>
-                            <button className="secondary" type="button" onClick={skipSuggestion}>
-                              Skip
-                            </button>
+                            {(() => {
+                              const fieldValue = project[currentSuggestion.field];
+                              const applied = isSuggestionApplied(fieldValue, currentSuggestion.value);
+                              const hasFieldContent = Boolean(String(fieldValue || '').trim());
+                              const canReplace = hasFieldContent && !applied;
+
+                              return (
+                                <>
+                                  <button
+                                    className={applied ? 'secondary accepted' : 'primary'}
+                                    type="button"
+                                    disabled={status !== 'idle' || applied}
+                                    onClick={() => acceptSuggestion(currentSuggestion)}
+                                  >
+                                    <CheckCircle2 size={16} aria-hidden="true" />
+                                    {applied ? 'Accepted' : hasFieldContent ? 'Merge into field' : 'Accept and Next'}
+                                  </button>
+                                  {canReplace ? (
+                                    <button
+                                      className="secondary"
+                                      type="button"
+                                      disabled={status !== 'idle'}
+                                      onClick={() => acceptSuggestion(currentSuggestion, { mode: 'replace' })}
+                                    >
+                                      Replace field
+                                    </button>
+                                  ) : null}
+                                  <button className="secondary" type="button" onClick={skipSuggestion} disabled={status !== 'idle'}>
+                                    Skip
+                                  </button>
+                                  {!suggestionReviseOpen ? (
+                                    <button
+                                      className="ghost-action"
+                                      type="button"
+                                      disabled={status !== 'idle'}
+                                      onClick={() => setSuggestionReviseOpen(true)}
+                                    >
+                                      <RefreshCw size={15} aria-hidden="true" />
+                                      Revise
+                                    </button>
+                                  ) : null}
+                                </>
+                              );
+                            })()}
                           </div>
+                          {suggestionReviseOpen ? (
+                            <RevisePanel
+                              value={suggestionGuidance}
+                              onChange={setSuggestionGuidance}
+                              onClose={() => {
+                                setSuggestionReviseOpen(false);
+                                setSuggestionGuidance('');
+                              }}
+                              onSubmit={() => regenerateStructure('suggestion')}
+                              refining={status === 'refining' && refiningScope === 'suggestion'}
+                              disabled={status !== 'idle'}
+                              placeholder="Off-topic or wrong focus? Tell the model what to suggest instead."
+                            />
+                          ) : null}
                         </article>
                       ) : null}
                       <div className="deck-nav">
@@ -1050,23 +1254,55 @@ function App() {
                 </section>
 
                 <section className="workspace-panel decisions-panel">
-                  <PanelHeader title="Decision Needed" meta={`${decisions.length} open`} />
+                  <PanelHeader
+                    title="Major Decisions"
+                    meta={
+                      decisions.length
+                        ? resolvedDecisionCount
+                          ? `${resolvedDecisionCount} resolved${openDecisionCount ? ` · ${openDecisionCount} open` : ''}`
+                          : `${openDecisionCount} open`
+                        : ''
+                    }
+                  />
                   {decisions.length ? (
                     <div className="decision-deck">
                       <div className="deck-progress">
                         <span>{Math.min(decisionIndex + 1, decisions.length)} / {decisions.length}</span>
-                        <strong>{decisions.length} open</strong>
+                        <strong>
+                          {resolvedDecisionCount ? `${resolvedDecisionCount} resolved` : `${openDecisionCount} open`}
+                        </strong>
                       </div>
                       {currentDecision ? (
                         <article className="decision-card active-card" key={currentDecision.id}>
-                          <h3>{currentDecision.title}</h3>
+                          <div className="card-line">
+                            <div className="card-title-group">
+                              <h3>{currentDecision.title}</h3>
+                              {isDecisionResolved(currentDecision) ? (
+                                <span className="resolved-badge">Resolved · {currentDecision.resolvedOptionLabel}</span>
+                              ) : null}
+                            </div>
+                            <button
+                              className={['revise-chip', decisionReviseOpen ? 'active' : ''].join(' ')}
+                              type="button"
+                              disabled={status !== 'idle'}
+                              aria-expanded={decisionReviseOpen}
+                              onClick={() => setDecisionReviseOpen((open) => !open)}
+                            >
+                              <RefreshCw size={14} aria-hidden="true" />
+                              Revise
+                            </button>
+                          </div>
                           <p>{currentDecision.question}</p>
                           <div className="option-stack">
                             {currentDecision.options.map((option) => (
                               <button
-                                className="option-button"
+                                className={[
+                                  'option-button',
+                                  option.label === currentDecision.resolvedOptionLabel ? 'selected' : ''
+                                ].join(' ')}
                                 key={`${currentDecision.id}-${option.label}`}
                                 type="button"
+                                disabled={status !== 'idle'}
                                 onClick={() => chooseOption(currentDecision, option)}
                               >
                                 <strong>{option.label}</strong>
@@ -1075,8 +1311,22 @@ function App() {
                               </button>
                             ))}
                           </div>
+                          {decisionReviseOpen ? (
+                            <RevisePanel
+                              value={decisionGuidance}
+                              onChange={setDecisionGuidance}
+                              onClose={() => {
+                                setDecisionReviseOpen(false);
+                                setDecisionGuidance('');
+                              }}
+                              onSubmit={() => regenerateStructure('decision')}
+                              refining={status === 'refining' && refiningScope === 'decision'}
+                              disabled={status !== 'idle'}
+                              placeholder="Options miss the point? Describe better choices for this decision."
+                            />
+                          ) : null}
                           <div className="deck-actions">
-                            <button className="secondary" type="button" onClick={skipDecision}>
+                            <button className="secondary" type="button" onClick={skipDecision} disabled={status !== 'idle'}>
                               Skip
                             </button>
                           </div>
@@ -1104,7 +1354,11 @@ function App() {
                         {decisions.map((decision, index) => (
                           <button
                             key={`${decision.id}-${index}`}
-                            className={['deck-dot', index === decisionIndex ? 'current' : ''].join(' ')}
+                            className={[
+                              'deck-dot',
+                              index === decisionIndex ? 'current' : '',
+                              isDecisionResolved(decision) ? 'done' : ''
+                            ].join(' ')}
                             type="button"
                             aria-label={`Open ${decision.title}`}
                             onClick={() => setDecisionIndex(index)}
@@ -1113,7 +1367,7 @@ function App() {
                       </div>
                     </div>
                   ) : (
-                    <EmptyState text="No major decision is open. Review the accepted state or draft the proposal." compact />
+                    <EmptyState text="No decision cards yet. Start from a rough idea or regenerate suggestions." compact />
                   )}
 
                   <section className="custom-note">
@@ -1537,7 +1791,8 @@ function LiteraturePanel({
   const visiblePapers = papers.slice(pageStart, pageStart + LITERATURE_PAPERS_PER_PAGE);
   const summaryText = literature?.relatedWorkParagraph?.trim() || '';
   const normalizedProblem = normalizeProblemText(problemText);
-  const summaryUpToDate = Boolean(summaryText && normalizedProblem.includes(summaryText));
+  const citationsUpToDate = areLiteratureCitationsInReferences(references, papers);
+  const summaryUpToDate = Boolean(summaryText && normalizedProblem.includes(summaryText) && citationsUpToDate);
   const hasStaleLiterature =
     Boolean(summaryText && !summaryUpToDate) &&
     (hasAutoLiteratureSummary(normalizedProblem) ||
@@ -1694,7 +1949,7 @@ function LiteraturePanel({
                     <span className="literature-snippet-badge">From retrieved papers</span>
                   </div>
                   <p className="literature-section-desc">
-                    One paragraph written for copy-paste—complete sentences citing each retrieved paper by author and year.
+                    Inserts the summary into Problem and adds formatted citations for all retrieved papers to Sources.
                   </p>
                 </div>
                 <div className="literature-snippet-body">
@@ -1721,10 +1976,10 @@ function LiteraturePanel({
                 >
                   <FileText size={16} aria-hidden="true" />
                   {summaryUpToDate
-                    ? 'Up to date in Problem statement'
+                    ? 'Up to date in Problem & Sources'
                     : hasStaleLiterature
-                      ? 'Update Problem statement'
-                      : 'Insert into Problem statement'}
+                      ? 'Update Problem & Sources'
+                      : 'Insert into Problem & Sources'}
                 </button>
               </section>
             ) : null}
@@ -2053,6 +2308,78 @@ function stripAutoLiteratureBlocks(text) {
   return result;
 }
 
+function areLiteratureCitationsInReferences(existingReferences, papers) {
+  const base = String(existingReferences || '').trim();
+  if (!Array.isArray(papers) || !papers.length) return true;
+
+  return papers.every((paper) => {
+    const citation = String(paper?.citation || '').trim();
+    return !citation || base.includes(citation);
+  });
+}
+
+function mergeCitationsIntoReferences(existingReferences, papers) {
+  const base = String(existingReferences || '').trim();
+  const merged = base ? [base] : [];
+  let addedCount = 0;
+
+  for (const paper of papers || []) {
+    const citation = String(paper?.citation || '').trim();
+    if (!citation) continue;
+
+    const alreadyIncluded = merged.some((entry) => entry.includes(citation));
+    if (alreadyIncluded) continue;
+
+    merged.push(citation);
+    addedCount += 1;
+  }
+
+  return {
+    references: merged.join('\n'),
+    addedCount
+  };
+}
+
+function buildLiteratureInsertNotice(meta) {
+  const parts = [];
+
+  if (meta.problemChanged) {
+    parts.push(
+      meta.replaced
+        ? 'Updated Problem statement with the latest literature summary.'
+        : 'Added literature summary to Problem statement.'
+    );
+  }
+
+  if (meta.citationsAdded > 0) {
+    parts.push(
+      `Added ${meta.citationsAdded} citation${meta.citationsAdded === 1 ? '' : 's'} to Sources — check the Sources field on the Project tab.`
+    );
+  } else if (!meta.problemChanged) {
+    parts.push('Sources already included these paper citations.');
+  }
+
+  return parts.join(' ');
+}
+
+function buildLiteratureInsertLogMessage(meta) {
+  const parts = [];
+
+  if (meta.problemChanged) {
+    parts.push(
+      meta.replaced
+        ? 'Replaced prior literature summary in Problem statement.'
+        : 'Inserted relevant-papers summary into Problem statement.'
+    );
+  }
+
+  if (meta.citationsAdded > 0) {
+    parts.push(`Added ${meta.citationsAdded} retrieved paper citation(s) to Sources.`);
+  }
+
+  return parts.join(' ') || 'Literature summary already integrated.';
+}
+
 function applyLiteratureSummaryToProblem(current, newSummary, previousSummary) {
   const next = String(newSummary || '').trim();
   if (!next) return normalizeProblemText(current);
@@ -2076,6 +2403,116 @@ function isSuggestionApplied(existing, suggestionValue) {
   return base === next || base.includes(next);
 }
 
+function isDecisionResolved(decision) {
+  return Boolean(cleanStructureText(decision?.resolvedOptionLabel) || cleanStructureText(decision?.resolvedValue));
+}
+
+function cleanStructureText(value) {
+  return String(value || '').trim();
+}
+
+function applyDecisionOptionToProject(existing, incoming, previousResolvedValue) {
+  const base = String(existing || '').trim();
+  const next = String(incoming || '').trim();
+  const previous = String(previousResolvedValue || '').trim();
+
+  if (previous) {
+    if (base === previous) return next;
+    if (base.includes(previous)) return base.replace(previous, next);
+  }
+
+  if (!base) return next;
+  if (base === next) return base;
+  return mergeAcceptedFieldValue(base, next);
+}
+
+function mergeSuggestionsPreservingOrder(previousSuggestions, incomingSuggestions, targetIndex, rejectedField) {
+  if (!Array.isArray(previousSuggestions) || !previousSuggestions.length) {
+    return Array.isArray(incomingSuggestions) ? incomingSuggestions : [];
+  }
+  if (!Array.isArray(incomingSuggestions) || !incomingSuggestions.length) {
+    return previousSuggestions;
+  }
+
+  const slotField = rejectedField || previousSuggestions[targetIndex]?.field;
+  const replacement =
+    incomingSuggestions.find((item) => item.field === slotField) ||
+    incomingSuggestions.find((item) => item.field === previousSuggestions[targetIndex]?.field) ||
+    incomingSuggestions[0];
+
+  const replaceIndex =
+    Number.isFinite(targetIndex) && targetIndex >= 0 && targetIndex < previousSuggestions.length
+      ? targetIndex
+      : previousSuggestions.findIndex((item) => item.field === slotField);
+
+  if (replaceIndex < 0) {
+    return previousSuggestions;
+  }
+
+  return previousSuggestions.map((item, index) =>
+    index === replaceIndex
+      ? {
+        ...item,
+        ...replacement,
+        field: replacement.field || item.field,
+        label: replacement.label || item.label,
+        value: replacement.value || item.value,
+        confidence: replacement.confidence || item.confidence,
+        reason: replacement.reason || item.reason
+      }
+      : item
+  );
+}
+
+function mergeDecisionsPreservingOrder(previousDecisions, incomingDecisions, rejectedId) {
+  if (!Array.isArray(previousDecisions) || !previousDecisions.length) {
+    return Array.isArray(incomingDecisions) ? incomingDecisions : [];
+  }
+  if (!rejectedId || !Array.isArray(incomingDecisions) || !incomingDecisions.length) {
+    return previousDecisions;
+  }
+
+  const previousDecision = previousDecisions.find((decision) => decision.id === rejectedId);
+  const replacement =
+    incomingDecisions.find((decision) => decision.id === rejectedId) ||
+    incomingDecisions.find((decision) => previousDecision && decision.field === previousDecision.field) ||
+    incomingDecisions[0];
+
+  return previousDecisions.map((decision) => (decision.id === rejectedId ? { ...replacement } : decision));
+}
+
+function mergeDecisionsAfterRegenerate(previousDecisions, incomingDecisions, rejectedId) {
+  if (!Array.isArray(incomingDecisions) || !incomingDecisions.length) {
+    return incomingDecisions;
+  }
+
+  const previousById = new Map(
+    (Array.isArray(previousDecisions) ? previousDecisions : []).map((decision) => [decision.id, decision])
+  );
+
+  return incomingDecisions.map((decision) => {
+    if (decision.id === rejectedId) {
+      return decision;
+    }
+
+    const previous = previousById.get(decision.id);
+    if (!previous || !isDecisionResolved(previous)) {
+      return decision;
+    }
+
+    const selectedOption = decision.options?.find((option) => option.label === previous.resolvedOptionLabel);
+    if (!selectedOption) {
+      return decision;
+    }
+
+    return {
+      ...decision,
+      resolvedOptionLabel: previous.resolvedOptionLabel,
+      resolvedValue: selectedOption.value
+    };
+  });
+}
+
 function mergeAcceptedFieldValue(existing, incoming) {
   const base = String(existing || '').trim();
   const next = String(incoming || '').trim();
@@ -2085,6 +2522,30 @@ function mergeAcceptedFieldValue(existing, incoming) {
   if (base.includes(next)) return base;
   if (next.includes(base)) return next;
   return mergeTextField(base, next);
+}
+
+function RevisePanel({ value, onChange, onClose, onSubmit, placeholder, disabled, refining }) {
+  return (
+    <div className="revise-panel">
+      <div className="revise-panel-head">
+        <span>Guide the model</span>
+        <button className="ghost-action ghost-action--compact" type="button" onClick={onClose} disabled={disabled || refining}>
+          Close
+        </button>
+      </div>
+      <textarea
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        disabled={disabled || refining}
+        rows={2}
+      />
+      <button className="secondary revise-panel-submit" type="button" disabled={disabled || refining} onClick={onSubmit}>
+        {refining ? <Loader2 className="spin" size={15} aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
+        Regenerate
+      </button>
+    </div>
+  );
 }
 
 function RunLogPanel({ entries }) {
@@ -2382,6 +2843,22 @@ function ProjectFieldCard({ field, label, value, isOpen, onOpen }) {
   );
 }
 
+function projectFieldPlaceholder(field, label) {
+  if (field === 'resources') {
+    return 'List formal proposal resources by category, one per line. Example:\nComputing and Infrastructure: GPU access for training runs.\nSoftware and Development Tools: PyTorch, experiment tracking, and version-controlled scripts.\nData and Model Artifacts: Model checkpoint and evaluation benchmark.\nBudget and Institutional Support: Course compute allocation and API access.';
+  }
+
+  if (field === 'timeline') {
+    return 'Write NSF-style milestones with timing and deliverables. Example:\nExpected results: Reproducible codebase and experiment report.\nMilestone 1 (Weeks 1--3): Reproduce baseline with documented scores.\nMilestone 2 (Weeks 4--6): Implement core method and validate on a dev set.';
+  }
+
+  if (field === 'evaluation') {
+    return 'Write a detailed evaluation plan with labeled subsections. Example:\nResearch Questions and Hypotheses: Does the proposed approach outperform the baseline?\nMetrics and Benchmarks: Primary accuracy metric and stability measures.\nComparative Baselines: Supervised-only and standard RL configurations.\nAblations and Sensitivity Analysis: Remove key components to test necessity.\nAnalysis Plan: Error analysis and reproducibility protocol.\nSuccess Criteria: Measurable improvement with stable training.';
+  }
+
+  return `Write or refine your ${label.toLowerCase()} here…`;
+}
+
 function ProjectFieldEditor({ field, label, value, onChange, onClose, inputRef }) {
   const charCount = String(value || '').length;
 
@@ -2429,7 +2906,7 @@ function ProjectFieldEditor({ field, label, value, onChange, onClose, inputRef }
             className="project-field-focus-textarea"
             value={value}
             onChange={(event) => onChange(event.target.value)}
-            placeholder={`Write or refine your ${label.toLowerCase()} here…`}
+            placeholder={projectFieldPlaceholder(field, label)}
           />
         </div>
 
