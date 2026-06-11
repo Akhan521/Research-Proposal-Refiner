@@ -224,7 +224,9 @@ app.post('/api/export/pdf', async (request, response) => {
     }
 
     const title = String(payload.title || 'proposal').trim();
-    const pdf = await proposalLatexToPdf(latex, title);
+    const pdf = await proposalLatexToPdf(latex, title, {
+      project: payload.project || null
+    });
 
     response.setHeader('Content-Type', 'application/pdf');
     response.setHeader('Content-Disposition', 'attachment; filename="proposal.pdf"');

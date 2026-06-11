@@ -1,3 +1,5 @@
+import { PROPOSAL_AUTHOR } from '../shared/mathlmDefaults.js';
+import { auditLatexStructure, repairProposalLatex, repairStructuralLatex } from './latexRepair.js';
 import { compileLatexDocument, prepareLatexDocument } from './pdfExport.js';
 
 const SPECIAL_CHAR_ESCAPES = {
@@ -222,16 +224,37 @@ function readBalancedGroup(source, startIndex, open, close) {
   return { text, end: index };
 }
 
-export async function validateProposalLatex(rawLatex, title = 'proposal', options = {}) {
-  const fallbackLatex = String(options.fallbackLatex || '').trim();
-  const attempts = [];
+function buildPrepareOptions(title, options = {}) {
+  return {
+    title,
+    author: options.author || PROPOSAL_AUTHOR
+  };
+}
 
+function buildValidationCandidates(rawLatex, title, options = {}) {
+  const fallbackLatex = String(options.fallbackLatex || '').trim();
+  const prepareOptions = buildPrepareOptions(title, options);
   const candidates = [
-    { label: 'prepared', source: rawLatex, transform: (value) => prepareLatexDocument(value, title) },
+    {
+      label: 'prepared',
+      source: rawLatex,
+      transform: (value) => prepareLatexDocument(value, title, prepareOptions)
+    },
+    {
+      label: 'structural-repair',
+      source: rawLatex,
+      transform: (value) =>
+        prepareLatexDocument(repairStructuralLatex(value, prepareOptions), title, prepareOptions)
+    },
     {
       label: 'repaired',
       source: rawLatex,
-      transform: (value) => prepareLatexDocument(repairUnescapedSpecialChars(value), title)
+      transform: (value) =>
+        prepareLatexDocument(
+          repairProposalLatex(repairUnescapedSpecialChars(value), prepareOptions),
+          title,
+          prepareOptions
+        )
     }
   ];
 
@@ -239,20 +262,41 @@ export async function validateProposalLatex(rawLatex, title = 'proposal', option
     candidates.push({
       label: 'fallback',
       source: fallbackLatex,
-      transform: (value) => prepareLatexDocument(value, title)
+      transform: (value) =>
+        prepareLatexDocument(
+          repairProposalLatex(repairUnescapedSpecialChars(value), prepareOptions),
+          title,
+          prepareOptions
+        )
     });
   }
+
+  if (typeof options.transform === 'function') {
+    return candidates.map((candidate) => ({
+      ...candidate,
+      transform: (value) => candidate.transform(options.transform(value))
+    }));
+  }
+
+  return candidates;
+}
+
+export async function validateProposalLatex(rawLatex, title = 'proposal', options = {}) {
+  const attempts = [];
+  const candidates = buildValidationCandidates(rawLatex, title, options);
 
   for (const candidate of candidates) {
     const source = String(candidate.source || '').trim();
     if (!source) continue;
 
     const document = candidate.transform(source);
+    const structure = auditLatexStructure(document);
     const compile = await compileLatexDocument(document);
 
     attempts.push({
       label: candidate.label,
-      error: compile.ok ? '' : compile.error || 'Compilation failed.'
+      error: compile.ok ? '' : compile.error || 'Compilation failed.',
+      structureIssues: structure.issues
     });
 
     if (compile.ok) {
@@ -261,6 +305,7 @@ export async function validateProposalLatex(rawLatex, title = 'proposal', option
         validated: true,
         repaired: candidate.label !== 'prepared',
         usedFallback: candidate.label === 'fallback',
+        structureAudit: structure,
         attempts
       };
     }
@@ -278,13 +323,18 @@ export async function validateProposalLatex(rawLatex, title = 'proposal', option
     }
   }
 
-  const lastDocument = candidates.at(-1)?.transform(candidates.at(-1).source) || prepareLatexDocument(rawLatex, title);
+  const lastCandidate = candidates.at(-1);
+  const prepareOptions = buildPrepareOptions(title, options);
+  const lastDocument = lastCandidate
+    ? lastCandidate.transform(String(lastCandidate.source || '').trim())
+    : prepareLatexDocument(repairProposalLatex(rawLatex, prepareOptions), title, prepareOptions);
 
   return {
     latex: lastDocument,
     validated: false,
     repaired: true,
-    usedFallback: Boolean(fallbackLatex),
+    usedFallback: Boolean(options.fallbackLatex),
+    structureAudit: auditLatexStructure(lastDocument),
     warning: 'LaTeX could not be compile-verified; returned the best-effort repaired draft.',
     attempts
   };

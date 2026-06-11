@@ -1,4 +1,6 @@
 import { createRequire } from 'node:module';
+import { PROPOSAL_AUTHOR } from '../shared/mathlmDefaults.js';
+import { normalizeUnicodeForLatex, repairProposalLatex } from './latexRepair.js';
 import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -9,14 +11,16 @@ const require = createRequire(import.meta.url);
 const { platformResolver } = require('node-latex-compiler');
 const execFileAsync = promisify(execFile);
 
-export function prepareLatexDocument(source, title = 'proposal') {
+export function prepareLatexDocument(source, title = 'proposal', options = {}) {
   const trimmed = String(source || '').trim();
+  const author = options.author || PROPOSAL_AUTHOR;
 
   if (!trimmed) {
     throw new Error('LaTeX source is empty.');
   }
 
-  return sanitizeLatexForExport(ensureCompleteLatexDocument(trimmed, title), title);
+  const complete = ensureCompleteLatexDocument(trimmed, title, author);
+  return sanitizeLatexForExport(repairProposalLatex(complete, { title, author }), title, author);
 }
 
 export async function compileLatexDocument(document) {
@@ -54,22 +58,38 @@ export async function compileLatexDocument(document) {
   }
 }
 
-export async function proposalLatexToPdf(latex, title = 'proposal') {
+export async function proposalLatexToPdf(latex, title = 'proposal', options = {}) {
   const { validateProposalLatex } = await import('./latexValidate.js');
-  const validation = await validateProposalLatex(latex, title);
+  let fallbackLatex = options.fallbackLatex;
+
+  if (!fallbackLatex && options.project) {
+    const { buildFallbackProposalLatex } = await import('./proposalGenerator.js');
+    fallbackLatex = buildFallbackProposalLatex(options.project);
+  }
+
+  const validation = await validateProposalLatex(latex, title, {
+    fallbackLatex,
+    author: options.author || PROPOSAL_AUTHOR
+  });
+
+  if (validation.compilerUnavailable) {
+    throw new Error(
+      'PDF compiler is unavailable. Run `npm install` in the project folder, then try again. LaTeX output remains available in the LaTeX tab.'
+    );
+  }
+
   const compile = await compileLatexDocument(validation.latex);
 
   if (compile.ok) {
     return compile.pdf;
   }
 
-  if (compile.compilerUnavailable) {
-    throw new Error(
-      'PDF compiler is unavailable. Run `npm install` in the project folder, then try again. LaTeX output remains available in the LaTeX tab.'
-    );
-  }
-
-  throw new Error(compile.error || 'PDF compilation failed.');
+  throw new Error(
+    compile.error ||
+    validation.warning ||
+    validation.attempts?.find((attempt) => attempt.error)?.error ||
+    'PDF compilation failed.'
+  );
 }
 
 function resolveBundledTectonic() {
@@ -158,12 +178,12 @@ const UNSUPPORTED_PACKAGE_PATTERN =
 const UNSAFE_PDF_EXPORT_PATTERN =
   /\\usepackage(?:\[[^\]]*\])?\{(?:fontspec|unicode-math|mathspec|minted|pygmentex|sagetex|pstricks|tikz-3dplot|biblatex)\}|\\RequirePackage\{(?:fontspec|unicode-math)\}|%!\s*TEX\s+program\s*=\s*(?:xelatex|lualatex)/i;
 
-function sanitizeLatexForExport(source, title = 'proposal') {
+function sanitizeLatexForExport(source, title = 'proposal', author = PROPOSAL_AUTHOR) {
   const normalized = normalizeUnicodeForLatex(source);
 
   if (UNSAFE_PDF_EXPORT_PATTERN.test(normalized)) {
     const body = stripUnsupportedConstructs(replaceExternalImageIncludes(extractDocumentBody(normalized)));
-    return ensureCompleteLatexDocument(body, title);
+    return ensureCompleteLatexDocument(body, title, author);
   }
 
   return stripUnsupportedConstructs(replaceExternalImageIncludes(normalized));
@@ -195,15 +215,6 @@ function stripUnsupportedConstructs(source) {
   return next;
 }
 
-function normalizeUnicodeForLatex(source) {
-  return String(source || '')
-    .replace(/\u2018|\u2019/g, "'")
-    .replace(/\u201c|\u201d/g, '"')
-    .replace(/\u2013|\u2014/g, '--')
-    .replace(/\u2026/g, '...')
-    .replace(/\u00a0/g, ' ');
-}
-
 function replaceExternalImageIncludes(source) {
   return String(source || '').replace(
     /\\includegraphics(?:\s*\[[^\]]*\])?\s*\{([^{}]+)\}/g,
@@ -222,7 +233,7 @@ Rough idea $\rightarrow$ structured state $\rightarrow$ student decisions $\righ
 \end{center}`;
 }
 
-function ensureCompleteLatexDocument(source, title) {
+function ensureCompleteLatexDocument(source, title, author = PROPOSAL_AUTHOR) {
   if (/\\documentclass\b/.test(source) && /\\begin\{document\}/.test(source)) {
     return normalizeCompleteLatexDocument(source);
   }
@@ -237,7 +248,7 @@ function ensureCompleteLatexDocument(source, title) {
 \setlist[itemize]{leftmargin=*,itemsep=0.35em,parsep=0pt,topsep=0.35em,partopsep=0pt}
 \setlist{nosep}
 \title{${escapeLatex(title)}}
-\author{}
+\author{${escapeLatex(author)}}
 \date{}
 \begin{document}
 \maketitle

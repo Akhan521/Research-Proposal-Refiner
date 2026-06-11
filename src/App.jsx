@@ -464,7 +464,7 @@ function App() {
     setPdfExportError('');
 
     try {
-      const nextPdfUrl = await exportPdfUrl(latex, project.title || 'proposal');
+      const nextPdfUrl = await exportPdfUrl(latex, project.title || 'proposal', project);
       updatePdfUrl(nextPdfUrl);
       setPdfStatus('ready');
       setActiveTab('pdf');
@@ -1072,7 +1072,7 @@ function App() {
     setError('');
 
     try {
-      const href = pdfUrl || (await exportPdfUrl(result.proposalLatex, project.title || 'proposal'));
+      const href = pdfUrl || (await exportPdfUrl(result.proposalLatex, project.title || 'proposal', project));
       const anchor = document.createElement('a');
       anchor.href = href;
       anchor.download = 'proposal.pdf';
@@ -1146,7 +1146,11 @@ function App() {
         setPdfExportError('');
 
         try {
-          const url = await exportPdfUrl(snapshot.result.proposalLatex, snapshot.project?.title || 'proposal');
+          const url = await exportPdfUrl(
+            snapshot.result.proposalLatex,
+            snapshot.project?.title || 'proposal',
+            snapshot.project
+          );
           updatePdfUrl(url);
           setPdfStatus('ready');
         } catch (requestError) {
@@ -1763,13 +1767,14 @@ async function postJson(url, body) {
   return data;
 }
 
-async function exportPdfUrl(proposalLatex, title) {
+async function exportPdfUrl(proposalLatex, title, project = null) {
   const response = await fetch('/api/export/pdf', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       title,
-      proposalLatex
+      proposalLatex,
+      project
     })
   });
 

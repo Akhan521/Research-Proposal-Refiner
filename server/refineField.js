@@ -29,9 +29,9 @@ const FIELD_CONFIG = {
   },
   timeline: {
     label: 'Research Milestones',
-    goal: 'Make milestones and expected results feasible, ordered, and easy to review.',
+    goal: 'Make milestones and expected results feasible, ordered, and explicitly tied to the research questions and hypotheses in the evaluation plan.',
     rules:
-      'Use milestone lines with optional timing (e.g., "Milestone 1 (Weeks 1--3): deliverable") plus a short expected-results summary.'
+      'Use milestone lines with optional timing (e.g., "Milestone 1 (Weeks 1--3): deliverable") plus a short expected-results summary. Each milestone must name a verifiable deliverable and indicate which research question or hypothesis it supports when possible.'
   },
   resources: {
     label: 'Resources',

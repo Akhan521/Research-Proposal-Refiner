@@ -34,6 +34,8 @@ export const LAYOUT_PREAMBLE_LINES = [
   '\\urlstyle{same}',
   '\\setlength{\\emergencystretch}{3em}',
   '\\usepackage{enumitem}',
+  '\\usepackage{etoolbox}',
+  '\\AtBeginEnvironment{abstract}{\\normalfont\\normalsize}',
   '\\setlist[itemize]{leftmargin=*,itemsep=0.35em,parsep=0pt,topsep=0.35em,partopsep=0pt}',
   '\\setlist[enumerate]{leftmargin=*,itemsep=0.25em,parsep=0pt,topsep=0.35em,partopsep=0pt}'
 ];
@@ -67,6 +69,14 @@ export function ensureLayoutPreamble(latex) {
     {
       test: /\\usepackage(?:\[[^\]]*\])?\{enumitem\}/,
       line: '\\usepackage{enumitem}'
+    },
+    {
+      test: /\\usepackage(?:\[[^\]]*\])?\{etoolbox\}/,
+      line: '\\usepackage{etoolbox}'
+    },
+    {
+      test: /\\AtBeginEnvironment\{abstract\}/,
+      line: '\\AtBeginEnvironment{abstract}{\\normalfont\\normalsize}'
     },
     {
       test: /\\setlist\[itemize\]/,

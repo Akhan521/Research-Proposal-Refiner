@@ -1,15 +1,21 @@
 import assert from 'node:assert/strict';
+import { DEFAULT_PROJECT } from '../shared/mathlmDefaults.js';
 import {
   buildFigureEnvironment,
+  buildProjectWorkflowFigure,
   buildWorkflowDiagramLatex,
   chooseDiagramLayout,
   detectFlowIssues,
   enforceFiguresInProposalLatex,
+  inferWorkflowStepsFromProject,
+  inferWorkflowWithSource,
+  isGenericWorkflowStep,
   normalizeWorkflowOrder,
   parseWorkflowSteps,
   resolveWorkflowSteps,
   sanitizeDiagramLabel,
   validateDiagram,
+  validateDiagramGrounding,
   validateDiagramLabelContent,
   verifyRenderedDiagramContent,
   verifyRenderedDiagramFlow
@@ -40,7 +46,7 @@ const colSpecOnly = '@{}c@{\\hspace{0.35em}$\\rightarrow$\\hspace{0.35em}}c@{}';
 assert.equal(parseWorkflowSteps(colSpecOnly).length, 0);
 
 const layout = chooseDiagramLayout(steps);
-assert.equal(layout, 'rows', 'five-node workflow should use multi-row layout');
+assert.equal(layout, 'vertical', 'workflow diagrams should always use top-down vertical layout');
 
 const project = {
   method: 'Problem Input -> Step Generator -> Step Verifier -> Reward Aggregation -> Policy Update'
@@ -110,7 +116,8 @@ const bounded = buildWorkflowDiagramLatex(steps, {
   footnote: '(Iterative loop until convergence)'
 });
 
-assert.match(bounded, /parbox\{0\.27\\linewidth\}/);
+assert.match(bounded, /parbox\{0\.78\\linewidth\}/);
+assert.match(bounded, /\\downarrow/);
 assert.doesNotMatch(bounded, /@\{\}c@\{[^}]*\\rightarrow/);
 
 const enforced = enforceFiguresInProposalLatex(
@@ -137,5 +144,38 @@ ${trainingEnforced.latex.replace(/\\documentclass\{article\}/, '').replace(/\\be
 
 const compiled = await compileLatexDocument(document);
 assert.equal(compiled.ok, true, compiled.error || 'training workflow diagram should compile');
+
+const defaultInference = inferWorkflowWithSource(DEFAULT_PROJECT);
+assert.ok(defaultInference.steps.length >= 3, 'default project should yield meaningful workflow steps');
+assert.notEqual(defaultInference.source, 'generic-fallback', 'default project should not use generic workflow template');
+assert.ok(
+  !defaultInference.steps.some((step) => isGenericWorkflowStep(step)),
+  'default project steps should be grounded, not generic template labels'
+);
+assert.ok(
+  defaultInference.steps.some((step) => /process reward|data pipeline|grpo|fine-tuning/i.test(step)),
+  'default project diagram should reflect method or milestone content'
+);
+const defaultGrounding = validateDiagramGrounding(defaultInference.steps, DEFAULT_PROJECT, {
+  source: defaultInference.source
+});
+assert.equal(defaultGrounding.ok, true, defaultGrounding.issues.join('; '));
+
+const noFigureDoc = String.raw`\documentclass{article}
+\begin{document}
+\section{Method and Training Workflow}
+Train a model with dense rewards and evaluate on benchmarks.
+\section{Evaluation Plan}
+Metrics and baselines.
+\end{document}`;
+
+const injected = enforceFiguresInProposalLatex(noFigureDoc, DEFAULT_PROJECT);
+assert.equal(injected.injected, true, 'diagram should be injected when missing');
+assert.match(injected.latex, /\\begin\{figure\}/);
+assert.equal(injected.validations[0].renderedContent.ok, true, injected.validations[0].renderedContent.issues.join('; '));
+
+const projectFigure = buildProjectWorkflowFigure(DEFAULT_PROJECT);
+assert.match(projectFigure.replacement, /Training Workflow Diagram/);
+assert.equal(projectFigure.validation.renderedContent.ok, true);
 
 console.log('PASS NSF-style workflow diagram generation and validation');

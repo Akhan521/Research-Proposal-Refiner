@@ -6,6 +6,33 @@ const UP_ARROW_PATTERN = /(?:\\uparrow|\$\\uparrow\$|↑)/;
 const MAX_HORIZONTAL_NODES = 3;
 const MAX_HORIZONTAL_CHARS = 72;
 const MAX_LABEL_CHARS = 34;
+const GENERIC_WORKFLOW_LABELS = [
+  /^problem definition$/i,
+  /^core method implementation$/i,
+  /^evaluation and ablations$/i,
+  /^analysis and write-up$/i,
+  /^data setup for /i
+];
+const GROUNDING_STOP_WORDS = new Set([
+  'about',
+  'after',
+  'among',
+  'based',
+  'between',
+  'from',
+  'into',
+  'that',
+  'this',
+  'through',
+  'using',
+  'with',
+  'without',
+  'will',
+  'would',
+  'their',
+  'these',
+  'those'
+]);
 const ALLOWED_LABEL_PATTERN = /^[\w\s.,;:+\-/()&'’]+$/i;
 const LEAKED_MARKUP_PATTERN =
   /\\textbackslash|\\textbf|\\textit|\\emph|\\texttt|\\centering|\\parbox|\\fbox|\\\\\[|\\\\(?![a-zA-Z@*])|\$[^$]+\$/;
@@ -91,9 +118,9 @@ function isReadableDiagramLabel(label) {
   return ALLOWED_LABEL_PATTERN.test(value);
 }
 
-export function validateDiagramLabelContent(label, role = 'step') {
+export function validateDiagramLabelContent(label, role = 'step', maxLength = MAX_LABEL_CHARS) {
   const original = clean(label);
-  const sanitized = sanitizeDiagramLabel(original);
+  const sanitized = sanitizeDiagramLabel(original, maxLength);
   const issues = [];
 
   if (!original) {
@@ -144,10 +171,10 @@ export function validateDiagramContent(steps, metadata = {}) {
   const stepResults = sanitizeDiagramSteps(steps);
   const titleResult = validateDiagramLabelContent(metadata.title || 'Agent Workflow Diagram', 'Diagram title');
   const footnoteResult = metadata.footnote
-    ? validateDiagramLabelContent(metadata.footnote, 'Diagram note')
+    ? validateDiagramLabelContent(metadata.footnote, 'Diagram note', 100)
     : { ok: true, issues: [], sanitized: '', original: '', corrected: false };
   const captionResult = metadata.caption
-    ? validateDiagramLabelContent(metadata.caption, 'Figure caption')
+    ? validateDiagramLabelContent(metadata.caption, 'Figure caption', 180)
     : { ok: true, issues: [], sanitized: '', original: '', corrected: false };
 
   const issues = [
@@ -240,7 +267,8 @@ function previewLabel(label, maxLength = 48) {
 function shortenLabel(label, maxLength = MAX_LABEL_CHARS) {
   const value = clean(label);
   if (value.length <= maxLength) return value;
-  return `${value.slice(0, maxLength - 1).trim()}…`;
+  const trimmed = value.slice(0, Math.max(1, maxLength - 3)).trim();
+  return `${trimmed}...`;
 }
 
 export function detectFlowIssues(source) {
@@ -248,31 +276,22 @@ export function detectFlowIssues(source) {
   const issues = [];
 
   if (BACKWARD_ARROW_PATTERN.test(text)) {
-    issues.push('Backward arrows detected; workflow will be normalized to left-to-right / top-to-bottom flow.');
+    issues.push('Backward arrows detected; workflow will be normalized to top-down flow.');
   }
 
   if (UP_ARROW_PATTERN.test(text)) {
-    issues.push('Upward arrows detected; workflow will be normalized to top-to-bottom flow.');
+    issues.push('Upward arrows detected; workflow will be normalized to top-down flow.');
   }
 
   return issues;
 }
 
-export function getCanonicalWorkflowOrder(project = {}) {
-  const fromMethod = parseWorkflowSteps(project.method || '');
-  if (fromMethod.length >= 2) return fromMethod;
-
-  const numbered = String(project.method || '')
-    .split(/\n+/)
-    .map((line) => line.replace(/^\s*\d+[\).\]]\s+/, '').trim())
-    .filter((line) => line.length >= 8)
-    .map((line) => shortenLabel(stripLatexMarkup(line), 40));
-
-  if (numbered.length >= 2) {
-    return dedupeSteps(numbered).slice(0, 8);
+export function getCanonicalWorkflowOrder(project = {}, options = {}) {
+  const inference = inferWorkflowWithSource(project, options);
+  if (inference.source === 'generic-fallback') {
+    return null;
   }
-
-  return null;
+  return inference.steps.slice(0, 8);
 }
 
 export function normalizeWorkflowOrder(steps, project = {}) {
@@ -393,11 +412,18 @@ export function verifyRenderedDiagramFlow(latex, layout, stepCount) {
     issues.push('Rendered diagram contains backward arrows.');
   }
 
-  if (forwardMatches.length < expected.forward) {
+  if (layout === 'vertical') {
+    if (forwardMatches.length > 0) {
+      issues.push('Vertical workflow diagram should use downward arrows only, not horizontal forward arrows.');
+    }
+    if (downwardMatches.length < expected.downward) {
+      issues.push('Rendered diagram is missing downward arrows between workflow stages.');
+    }
+  } else if (forwardMatches.length < expected.forward) {
     issues.push('Rendered diagram is missing forward arrows between workflow steps.');
   }
 
-  if (layout !== 'horizontal' && downwardMatches.length < expected.downward) {
+  if (layout !== 'horizontal' && layout !== 'vertical' && downwardMatches.length < expected.downward) {
     issues.push('Rendered diagram is missing downward arrows between workflow stages.');
   }
 
@@ -480,20 +506,91 @@ function extractStepsFromRenderedDiagram(body) {
   return dedupeSteps(nodes);
 }
 
-export function resolveWorkflowSteps(parsedSteps, source, project = {}) {
+function buildGroundingCorpus(project = {}) {
+  return [project.method, project.timeline, project.evaluation, project.problem, project.title, project.topic]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function significantWords(text) {
+  return String(text || '')
+    .toLowerCase()
+    .split(/\s+/)
+    .map((word) => word.replace(/[^\w-]/g, ''))
+    .filter((word) => word.length > 3 && !GROUNDING_STOP_WORDS.has(word));
+}
+
+export function isGenericWorkflowStep(step) {
+  const value = clean(step).toLowerCase();
+  return GENERIC_WORKFLOW_LABELS.some((pattern) => pattern.test(value));
+}
+
+export function stepMatchesProjectCorpus(step, corpus) {
+  const words = significantWords(step);
+  if (!words.length) return false;
+  const hits = words.filter((word) => corpus.includes(word));
+  return hits.length >= Math.max(1, Math.ceil(words.length * 0.34));
+}
+
+export function validateDiagramGrounding(steps, project = {}, meta = {}) {
+  const labels = (Array.isArray(steps) ? steps : []).map((step) => clean(step)).filter(Boolean);
+  const corpus = buildGroundingCorpus(project);
+  const genericSteps = labels.filter((step) => isGenericWorkflowStep(step));
+  const groundedSteps = labels.filter((step) => stepMatchesProjectCorpus(step, corpus));
+  const issues = [];
+
+  if (!labels.length) {
+    issues.push('Workflow diagram has no steps to validate against project content.');
+  }
+
+  if (genericSteps.length) {
+    issues.push(
+      `Diagram uses generic template step(s): ${genericSteps.map((step) => `"${step}"`).join(', ')}.`
+    );
+  }
+
+  if (labels.length && groundedSteps.length < Math.min(2, labels.length)) {
+    issues.push('Workflow steps are not grounded in the proposal method, timeline, or evaluation text.');
+  }
+
+  if (meta.source === 'generic-fallback') {
+    issues.push('Diagram fell back to a generic workflow template instead of project-specific steps.');
+  }
+
+  return {
+    ok: issues.length === 0,
+    issues,
+    genericFallbackUsed: genericSteps.length > 0 || meta.source === 'generic-fallback',
+    groundedCount: groundedSteps.length,
+    stepCount: labels.length,
+    source: meta.source || 'unknown'
+  };
+}
+
+export function resolveWorkflowSteps(parsedSteps, source, project = {}, options = {}) {
+  const inference = inferWorkflowWithSource(project, options);
+  const corpus = buildGroundingCorpus(project);
   const validParsed = (Array.isArray(parsedSteps) ? parsedSteps : []).filter((step) =>
     isValidWorkflowStep(step)
   );
+
   if (validParsed.length >= 2) {
-    return compressWorkflowSteps(validParsed);
+    const grounded = validParsed.filter((step) => stepMatchesProjectCorpus(step, corpus));
+    if (grounded.length >= 2 && !validParsed.some((step) => isGenericWorkflowStep(step))) {
+      return compressWorkflowSteps(validParsed);
+    }
   }
 
   const fromRendered = extractStepsFromRenderedDiagram(source);
   if (fromRendered.length >= 2) {
-    return compressWorkflowSteps(fromRendered);
+    const grounded = fromRendered.filter((step) => stepMatchesProjectCorpus(step, corpus));
+    if (grounded.length >= 2 && !fromRendered.some((step) => isGenericWorkflowStep(step))) {
+      return compressWorkflowSteps(fromRendered);
+    }
   }
 
-  return compressWorkflowSteps(inferWorkflowStepsFromProject(project));
+  return inference.steps;
 }
 
 function compressWorkflowSteps(steps) {
@@ -561,44 +658,284 @@ function dedupeSteps(steps) {
   return result.slice(0, 8);
 }
 
-export function inferWorkflowStepsFromProject(project = {}) {
-  const fromMethod = parseWorkflowSteps(project.method || '');
-  if (fromMethod.length >= 2) return fromMethod;
+function extractNumberedSteps(text) {
+  const steps = [];
 
-  const numbered = String(project.method || '')
-    .split(/\n+/)
-    .map((line) => line.replace(/^\s*\d+[\).\]]\s+/, '').trim())
-    .filter((line) => line.length >= 8)
-    .map((line) => shortenLabel(stripLatexMarkup(line), 40));
+  for (const raw of String(text || '').split(/\n+/)) {
+    const line = raw.trim();
+    if (!/^(?:\d+[\).\]]\s+|-\s+|\*\s+|\\item\s+)/.test(line)) continue;
 
-  if (numbered.length >= 2) {
-    return dedupeSteps(numbered).slice(0, 6);
+    const body = line.replace(/^(?:\d+[\).\]]\s+|-\s+|\*\s+|\\item\s+)/, '').trim();
+    const label = shortenLabel(stripLatexMarkup(body), 34);
+    if (label.length >= 6) steps.push(label);
   }
 
-  return [
-    'Problem Input',
-    'Step Generator',
-    'Step Verifier',
-    'Reward Aggregation',
-    'Policy Update'
-  ];
+  return dedupeSteps(steps);
 }
 
-export function chooseDiagramLayout(steps) {
-  const labels = (Array.isArray(steps) ? steps : []).map((step) => clean(step)).filter(Boolean);
-  if (!labels.length) return 'vertical';
+function extractClauseSteps(text) {
+  return dedupeSteps(
+    String(text || '')
+      .split(/\s*;\s*|\s+then\s+|\s*,\s+and\s+|\s+and\s+(?=[A-Za-z])/i)
+      .map((part) => shortenLabel(stripLatexMarkup(part), 32))
+      .filter((part) => part.length >= 8 && part.length <= 34)
+  );
+}
 
-  const totalChars = labels.reduce((sum, label) => sum + label.length, 0);
-  const longest = Math.max(...labels.map((label) => label.length));
+function extractMethodSectionBody(latex) {
+  const match = String(latex || '').match(
+    /\\section\*?\{(?:Method|Approach|Training Workflow|Method and [^}]+)\}([\s\S]*?)(?=\\section\*?\{|\\end\{document\})/i
+  );
+  return match ? match[1] : '';
+}
 
-  if (labels.length <= MAX_HORIZONTAL_NODES && totalChars <= MAX_HORIZONTAL_CHARS && longest <= 22) {
-    return 'horizontal';
+function milestoneDescriptionToStep(description) {
+  const cleaned = clean(description)
+    .replace(/^milestone\s+\d+\s*(?:\([^)]+\))?\s*[:\-—–]\s*/i, '')
+    .replace(/^phase\s+\d+\s*(?:\([^)]+\))?\s*[:\-—–]\s*/i, '');
+  return shortenLabel(stripLatexMarkup(cleaned), 32);
+}
+
+function extractMilestoneWorkflowSteps(project = {}) {
+  const timeline = String(project.timeline || '');
+  if (!timeline) return [];
+
+  const steps = [];
+  for (const rawLine of timeline.split(/\n+/)) {
+    const line = clean(rawLine);
+    const milestoneMatch =
+      line.match(/^(?:milestone|phase)\s*\d+\s*(?:\([^)]+\))?\s*[:\-—–]\s*(.+)$/i) ||
+      line.match(/^(?:milestone|phase)\s*\d+\s*[:\-—–]\s*(.+)$/i);
+
+    if (!milestoneMatch) continue;
+
+    const label = milestoneDescriptionToStep(milestoneMatch[1] || milestoneMatch[0]);
+    if (label.length >= 8) steps.push(label);
   }
 
-  if (labels.length <= 6 && longest <= MAX_LABEL_CHARS) {
-    return 'rows';
+  return dedupeSteps(steps).slice(0, 6);
+}
+
+function deriveWorkflowFromMethodPhrases(project = {}) {
+  const method = String(project.method || '');
+  if (!method) return [];
+
+  const candidates = [];
+  const phrasePatterns = [
+    [/group-relative policy optimization|\bgrpo\b/i, 'GRPO policy optimization'],
+    [/dense(?:,\s*)?process rewards?|process-level rewards?/i, 'Dense process rewards'],
+    [/curriculum scheduling|difficulty curriculum/i, 'Curriculum scheduling'],
+    [/self-consistency|majority vote/i, 'Self-consistency voting'],
+    [/supervised fine-tuning|\bsft\b/i, 'Supervised fine-tuning baseline'],
+    [/executable (?:python )?verification|code verification/i, 'Executable verification'],
+    [/multi-?sample rollouts?/i, 'Multi-sample rollouts'],
+    [/policy optimization|policy update/i, 'Policy optimization'],
+    [/reward aggregation|reward signals?/i, 'Reward design'],
+    [/benchmark evaluation|exact-match/i, 'Benchmark evaluation']
+  ];
+
+  for (const [pattern, label] of phrasePatterns) {
+    if (pattern.test(method)) candidates.push(label);
   }
 
+  if (candidates.length >= 2) {
+    return dedupeSteps(candidates).slice(0, 6);
+  }
+
+  const verbChunks =
+    method.match(
+      /\b(?:train|implement|evaluate|compare|score|optimize|aggregate|reproduce|conduct|validate|monitor)\w*\s+[^,.;]{8,42}/gi
+    ) || [];
+
+  const derived = verbChunks
+    .map((chunk) => shortenLabel(stripLatexMarkup(chunk), 32))
+    .filter((chunk) => chunk.length >= 8 && chunk.length <= 34);
+
+  return dedupeSteps(derived).slice(0, 6);
+}
+
+function condenseMethodToWorkflow(project = {}) {
+  const method = String(project.method || '');
+  const sentences = method
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => shortenLabel(stripLatexMarkup(sentence), 30))
+    .filter((sentence) => sentence.length >= 8 && sentence.length <= 34);
+
+  if (sentences.length >= 3) {
+    return dedupeSteps(sentences).slice(0, 6);
+  }
+
+  const clauses = extractClauseSteps(method);
+  if (clauses.length >= 2) {
+    return clauses.slice(0, 6);
+  }
+
+  return [];
+}
+
+function genericWorkflowFromProject(project = {}) {
+  const topic = clean(project.title) || clean(project.topic) || 'this research';
+  const shortTopic = shortenLabel(topic, 24);
+  const problemLead = shortenLabel(stripLatexMarkup(firstSentence(project.problem || '')), 30);
+  const methodLead = shortenLabel(stripLatexMarkup(firstSentence(project.method || '')), 30);
+
+  const steps = [];
+  if (problemLead.length >= 8) {
+    steps.push(shortenLabel(`Define ${problemLead}`, 32));
+  } else {
+    steps.push('Problem Definition');
+  }
+
+  if (methodLead.length >= 8) {
+    steps.push(methodLead);
+  } else {
+    steps.push(shortenLabel(`Data setup for ${shortTopic}`, 30));
+  }
+
+  steps.push('Core Method Implementation', 'Evaluation and Ablations', 'Analysis and Write-up');
+  return steps;
+}
+
+function firstSentence(text) {
+  const value = clean(text);
+  if (!value) return '';
+  return value.match(/[^.!?]+[.!?]+/)?.[0]?.trim() || value;
+}
+
+export function buildDiagramMetadata(project = {}) {
+  const title = clean(project.title) || clean(project.topic) || 'Research Workflow';
+  const method = String(project.method || '');
+  const isRl = /reinforcement|grpo|ppo|policy gradient|rl training/i.test(method);
+  const isAgent = /agent|tool use|workflow|orchestrat/i.test(method);
+  const shortTitle = shortenLabel(title, 64);
+
+  let diagramTitle = 'Method Workflow Diagram';
+  if (isRl) diagramTitle = 'Training Workflow Diagram';
+  else if (isAgent) diagramTitle = 'Agent Workflow Diagram';
+
+  let caption = `Workflow diagram illustrating the proposed method for ${shortTitle}.`;
+  if (isRl) {
+    caption = `Training workflow for ${shortTitle}: data preparation, reward design, policy optimization, and evaluation.`;
+  } else if (isAgent) {
+    caption = `Agent workflow for ${shortTitle}: inputs, reasoning steps, tool use, and outputs.`;
+  }
+
+  const footnote = isRl
+    ? '(Iterative training loop until convergence)'
+    : isAgent
+      ? '(Iterative agent loop until task completion)'
+      : '';
+
+  return { title: diagramTitle, caption, footnote };
+}
+
+export function inferWorkflowWithSource(project = {}, options = {}) {
+  const method = project.method || '';
+  const latex = options.latex || '';
+
+  const fromArrows = parseWorkflowSteps(method);
+  if (fromArrows.length >= 2) {
+    return { steps: compressWorkflowSteps(fromArrows), source: 'method-arrows' };
+  }
+
+  const numbered = extractNumberedSteps(method);
+  if (numbered.length >= 2) {
+    return { steps: compressWorkflowSteps(numbered), source: 'method-numbered' };
+  }
+
+  const fromLatexItems = extractNumberedSteps(extractMethodSectionBody(latex));
+  if (fromLatexItems.length >= 2) {
+    return { steps: compressWorkflowSteps(fromLatexItems), source: 'latex-method-items' };
+  }
+
+  const fromMilestones = extractMilestoneWorkflowSteps(project);
+  if (fromMilestones.length >= 3) {
+    return { steps: compressWorkflowSteps(fromMilestones), source: 'timeline-milestones' };
+  }
+
+  const clauses = extractClauseSteps(method);
+  if (clauses.length >= 2) {
+    return { steps: compressWorkflowSteps(clauses), source: 'method-clauses' };
+  }
+
+  const condensed = condenseMethodToWorkflow(project);
+  if (condensed.length >= 2) {
+    return { steps: compressWorkflowSteps(condensed), source: 'method-condensed' };
+  }
+
+  const derived = deriveWorkflowFromMethodPhrases(project);
+  if (derived.length >= 2) {
+    return { steps: compressWorkflowSteps(derived), source: 'method-phrases' };
+  }
+
+  if (fromMilestones.length >= 2) {
+    return { steps: compressWorkflowSteps(fromMilestones), source: 'timeline-milestones' };
+  }
+
+  return {
+    steps: compressWorkflowSteps(genericWorkflowFromProject(project)),
+    source: 'generic-fallback'
+  };
+}
+
+export function inferWorkflowStepsFromProject(project = {}, options = {}) {
+  return inferWorkflowWithSource(project, options).steps;
+}
+
+export function buildProjectWorkflowFigure(project = {}, options = {}) {
+  const meta = buildDiagramMetadata(project);
+  const inference = inferWorkflowWithSource(project, options);
+  let steps = resolveWorkflowSteps(
+    parseWorkflowSteps(project.method || ''),
+    project.method || '',
+    project,
+    options
+  );
+
+  const initialGrounding = validateDiagramGrounding(steps, project, { source: inference.source });
+  if (!initialGrounding.ok && inference.source !== 'generic-fallback') {
+    steps = inference.steps;
+  }
+
+  const validation = validateDiagram(steps, {
+    project,
+    source: project.method || '',
+    title: meta.title,
+    footnote: meta.footnote,
+    caption: meta.caption
+  });
+  const finalSteps = validation.steps || steps;
+  const grounding = validateDiagramGrounding(finalSteps, project, { source: inference.source });
+  const replacement = buildFigureEnvironment(
+    finalSteps,
+    validation.content?.caption || meta.caption,
+    '[h]',
+    {
+      layout: validation.layout,
+      title: validation.content?.title || meta.title,
+      footnote: validation.content?.footnote || meta.footnote,
+      project
+    }
+  );
+
+  const renderedFlow = verifyRenderedDiagramFlow(replacement, validation.layout, finalSteps.length);
+  const renderedContent = verifyRenderedDiagramContent(replacement);
+
+  return {
+    replacement,
+    steps: finalSteps,
+    validation: {
+      ...validation,
+      grounding,
+      inferenceSource: inference.source,
+      issues: [...(validation.issues || []), ...grounding.issues],
+      renderedFlow,
+      renderedContent
+    }
+  };
+}
+
+export function chooseDiagramLayout(_steps) {
   return 'vertical';
 }
 
@@ -642,7 +979,7 @@ export function validateDiagram(steps, options = {}) {
     caption: options.caption
   });
   const sanitizedSteps = content.steps.length ? content.steps : labels;
-  const bounds = validateDiagramBounds(sanitizedSteps, options.layout);
+  const bounds = validateDiagramBounds(sanitizedSteps, 'vertical');
   const flow = validateDiagramFlow(sanitizedSteps, bounds.layout, options.source || '', options.project || {});
   const orderedSteps = flow.steps || sanitizedSteps;
 
@@ -727,17 +1064,13 @@ export function buildWorkflowDiagramLatex(steps, options = {}) {
   const labels = (Array.isArray(steps) ? steps : [])
     .map((step) => sanitizeDiagramLabel(step))
     .filter(Boolean);
-  const layout = options.layout || chooseDiagramLayout(labels);
+  const layout = 'vertical';
   const title = sanitizeDiagramLabel(options.title || 'Agent Workflow Diagram', 80);
   const footnote = sanitizeDiagramLabel(options.footnote || '', 100);
 
   let body = '';
   if (!labels.length) {
     body = buildVerticalDiagram(inferWorkflowStepsFromProject(options.project || {}));
-  } else if (layout === 'horizontal') {
-    body = buildHorizontalDiagram(labels);
-  } else if (layout === 'rows') {
-    body = buildRowsDiagram(labels);
   } else {
     body = buildVerticalDiagram(labels);
   }
@@ -828,17 +1161,19 @@ function extractDiagramTitle(body) {
   return match ? stripLatexMarkup(match[1]) : '';
 }
 
-function replaceFigureBlock(block, project) {
+function replaceFigureBlock(block, project, options = {}) {
   const bodyWithoutCaption = block.body.replace(/\\caption\{[\s\S]*?\}/, '');
-  const caption = extractCaption(block.body) || 'Workflow diagram illustrating the proposed method.';
+  const meta = buildDiagramMetadata(project);
+  const caption = extractCaption(block.body) || meta.caption;
   const parsedSteps = resolveWorkflowSteps(
     parseWorkflowSteps(bodyWithoutCaption),
     bodyWithoutCaption,
-    project
+    project,
+    options
   );
 
-  const title = extractDiagramTitle(bodyWithoutCaption) || 'Agent Workflow Diagram';
-  const footnote = resolveDiagramFootnote(bodyWithoutCaption, parsedSteps);
+  const title = extractDiagramTitle(bodyWithoutCaption) || meta.title;
+  const footnote = resolveDiagramFootnote(bodyWithoutCaption, parsedSteps, meta.footnote);
   const validation = validateDiagram(parsedSteps, {
     source: bodyWithoutCaption,
     project,
@@ -866,7 +1201,7 @@ function replaceFigureBlock(block, project) {
   let renderedContent = verifyRenderedDiagramContent(replacement);
 
   if (!renderedContent.ok) {
-    finalSteps = compressWorkflowSteps(inferWorkflowStepsFromProject(project));
+    finalSteps = inferWorkflowWithSource(project, options).steps;
     finalValidation = validateDiagram(finalSteps, {
       source: bodyWithoutCaption,
       project,
@@ -889,14 +1224,21 @@ function replaceFigureBlock(block, project) {
     renderedContent = verifyRenderedDiagramContent(replacement);
   }
 
+  const grounding = validateDiagramGrounding(finalSteps, project, {
+    source: inferWorkflowWithSource(project, options).source
+  });
+
   return {
     replacement,
     steps: finalSteps,
     validation: {
       ...finalValidation,
+      grounding,
+      inferenceSource: inferWorkflowWithSource(project, options).source,
       issues: [
         ...(finalValidation.issues || []),
-        ...(!renderedContent.ok ? ['Diagram content check failed; rebuilt from project method workflow.'] : [])
+        ...(!renderedContent.ok ? ['Diagram content check failed; rebuilt from project method workflow.'] : []),
+        ...grounding.issues
       ],
       renderedFlow,
       renderedContent
@@ -904,34 +1246,55 @@ function replaceFigureBlock(block, project) {
   };
 }
 
-function replaceSectionFigure(latex, project) {
+function replaceSectionFigure(latex, project, options = {}) {
   const pattern =
     /(\\section\*?\{Figure[^}]*\})([\s\S]*?)(?=\\section\*?\{|\\end\{document\})/i;
 
   if (!pattern.test(latex)) {
-    return { latex, replaced: false };
+    return { latex, replaced: false, validations: [] };
+  }
+
+  const built = buildProjectWorkflowFigure(project, options);
+
+  return {
+    latex: latex.replace(pattern, (full, heading) => `${heading}\n${built.replacement}\n`),
+    replaced: true,
+    validations: [built.validation]
+  };
+}
+
+function injectWorkflowFigureAfterMethod(latex, project, options = {}) {
+  const built = buildProjectWorkflowFigure(project, { ...options, latex });
+  const insertPatterns = [
+    /(\\section\*?\{(?:Method|Approach|Training Workflow|Method and [^}]+)\}[\s\S]*?)(?=\\section\*?\{)/i,
+    /(\\section\*?\{Project Goal\}[\s\S]*?)(?=\\section\*?\{)/i
+  ];
+
+  for (const pattern of insertPatterns) {
+    if (pattern.test(latex)) {
+      return {
+        latex: latex.replace(pattern, `$1\n${built.replacement}\n`),
+        replaced: 1,
+        validations: [built.validation],
+        injected: true
+      };
+    }
+  }
+
+  if (/\\end\{document\}/i.test(latex)) {
+    return {
+      latex: latex.replace(/\\end\{document\}/i, `${built.replacement}\n\\end{document}`),
+      replaced: 1,
+      validations: [built.validation],
+      injected: true
+    };
   }
 
   return {
-    latex: latex.replace(pattern, (full, heading, body) => {
-      const captionMatch = body.match(/\\caption\{([\s\S]*?)\}/);
-      const caption = captionMatch ? stripLatexMarkup(captionMatch[1]) : 'Method workflow diagram.';
-      const steps = resolveWorkflowSteps(parseWorkflowSteps(body), body, project);
-      const title = extractDiagramTitle(body) || 'Agent Workflow Diagram';
-      const stepsForFootnote = steps;
-      const footnote = resolveDiagramFootnote(body, stepsForFootnote);
-      const validation = validateDiagram(steps, { source: body, project, title, footnote, caption });
-      const orderedSteps = validation.steps || steps;
-      const figure = buildFigureEnvironment(orderedSteps, validation.content?.caption || caption, '[h]', {
-        layout: validation.layout,
-        title: validation.content?.title || title,
-        footnote: validation.content?.footnote || footnote,
-        project
-      });
-
-      return `${heading}\n${figure}\n`;
-    }),
-    replaced: true
+    latex: `${latex}\n${built.replacement}\n`,
+    replaced: 1,
+    validations: [built.validation],
+    injected: true
   };
 }
 
@@ -942,14 +1305,33 @@ export function appendDiagramValidationNote(report, figureEnforcement = {}) {
     : [];
   const notes = [];
 
-  if (figureEnforcement.replaced > 0) {
+  if (figureEnforcement.injected) {
+    notes.push('- Workflow diagram was inserted from project.method because the draft had no valid figure.');
+  } else if (figureEnforcement.replaced > 0) {
     notes.push(
       `- Workflow diagram normalized to stay inside the figure bounds with ${figureEnforcement.replaced} figure block(s) rebuilt.`
     );
   }
 
   for (const validation of validations) {
+    if (validation.inferenceSource && validation.inferenceSource !== 'generic-fallback') {
+      notes.push(`- Workflow steps inferred from ${validation.inferenceSource.replace(/-/g, ' ')}.`);
+    } else if (validation.inferenceSource === 'generic-fallback') {
+      notes.push('- Warning: workflow diagram used generic template steps because project-specific steps could not be inferred.');
+    }
+
+    if (validation.grounding?.ok) {
+      notes.push(
+        `- Diagram grounding check passed (${validation.grounding.groundedCount}/${validation.grounding.stepCount} steps match proposal content).`
+      );
+    } else if (validation.grounding?.issues?.length) {
+      for (const issue of validation.grounding.issues) {
+        notes.push(`- Diagram grounding: ${issue}`);
+      }
+    }
+
     for (const issue of validation.issues || []) {
+      if (/grounding|generic template|not grounded/i.test(issue)) continue;
       if (/label|markup|readable|caption|title|note/i.test(issue)) {
         notes.push(`- Diagram content: ${issue}`);
       } else {
@@ -993,12 +1375,25 @@ export function enforceFiguresInProposalLatex(latex, project = {}) {
   const source = String(latex || '');
   const blocks = extractFigureBlocks(source);
 
+  const diagramOptions = { latex: source };
+
   if (!blocks.length) {
-    const sectionResult = replaceSectionFigure(source, project);
+    const sectionResult = replaceSectionFigure(source, project, diagramOptions);
+    if (sectionResult.replaced) {
+      return {
+        latex: sectionResult.latex,
+        replaced: 1,
+        validations: sectionResult.validations || [],
+        injected: false
+      };
+    }
+
+    const injected = injectWorkflowFigureAfterMethod(sectionResult.latex || source, project, diagramOptions);
     return {
-      latex: sectionResult.latex,
-      replaced: sectionResult.replaced ? 1 : 0,
-      validations: []
+      latex: injected.latex,
+      replaced: injected.replaced,
+      validations: injected.validations || [],
+      injected: Boolean(injected.injected)
     };
   }
 
@@ -1009,7 +1404,7 @@ export function enforceFiguresInProposalLatex(latex, project = {}) {
 
   for (const block of blocks) {
     rebuilt += source.slice(cursor, block.start);
-    const next = replaceFigureBlock(block, project);
+    const next = replaceFigureBlock(block, project, diagramOptions);
     rebuilt += next.replacement;
     validations.push(next.validation);
     replaced += 1;

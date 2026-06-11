@@ -12,7 +12,7 @@ function escapeLatex(value) {
     .replace(/\^/g, '\\textasciicircum{}');
 }
 
-function escapeUrlForLatex(url) {
+export function escapeUrlForLatex(url) {
   return String(url || '')
     .replace(/\\/g, '/')
     .replace(/%/g, '\\%')

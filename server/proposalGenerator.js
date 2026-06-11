@@ -2,12 +2,19 @@ import {
   createBlankProject,
   DEFAULT_PROJECT,
   DEFAULT_PROJECT_TOPIC,
-  DEFAULT_REQUIREMENTS
+  DEFAULT_REQUIREMENTS,
+  PROPOSAL_AUTHOR
 } from '../shared/mathlmDefaults.js';
 import {
   appendReferenceValidationNote,
   normalizeReferencesField
 } from './citationValidate.js';
+import {
+  appendInTextCitationNote,
+  buildCitationRegistry,
+  enforceCitationsInProposalLatex,
+  finalizeCitationValidation
+} from './citationEnforce.js';
 import {
   buildReferencesLatexSection,
   buildResourcesLatexSection,
@@ -23,16 +30,24 @@ import {
   enforceAbstractInProposalLatex,
   enforceEvaluationInProposalLatex,
   enforceMilestonesInProposalLatex,
+  formatMilestoneValidationNote,
   normalizeEvaluationField,
-  normalizeTimelineField
+  normalizeTimelineField,
+  validateMilestonePlan
 } from './proposalSections.js';
 import {
   appendDiagramValidationNote,
-  buildFigureEnvironment,
+  buildProjectWorkflowFigure,
   enforceFiguresInProposalLatex,
   inferWorkflowStepsFromProject
 } from './latexDiagram.js';
-import { validateProposalLatex } from './latexValidate.js';
+import { repairStructuralLatex } from './latexRepair.js';
+import { repairUnescapedSpecialChars, validateProposalLatex } from './latexValidate.js';
+import {
+  appendRedundancyNote,
+  prepareProjectForProposal,
+  validateLatexRedundancy
+} from './proposalRedundancy.js';
 
 const EMPTY_PROJECT_FOR_SERVER = createBlankProject();
 const PROJECT_FALLBACKS = DEFAULT_PROJECT;
@@ -61,18 +76,20 @@ Rules:
 - Return a complete LaTeX document with \\documentclass[11pt]{article}, 1-inch margins, title, sections, and bibliography/source notes.
 - Use compile-safe LaTeX. Avoid minted, shell-escape, external images, custom fonts, or packages that require extra system tools.
 - Do not use \\includegraphics or reference external image files. Build figures directly in LaTeX with text boxes, minipages, tabular layouts, lists, or simple arrows.
-- Workflow diagrams are rebuilt at export time from short plain-text node labels joined by forward arrows. Use 3--6 concise step names in execution order (e.g., "Problem Input $\\rightarrow$ Step Generator $\\rightarrow$ Policy Update"); do not put LaTeX formatting commands inside node labels. Backward arrows, out-of-order steps, and leaked markup are corrected automatically.
+- Workflow diagrams are rebuilt at export time from grounded proposal content (project.method arrow chains, numbered method steps, LaTeX method items, and timeline milestones) as a top-down vertical flow with downward arrows between stacked nodes. Use 3--6 concise step names in execution order (e.g., "Problem Input -> Step Generator -> Policy Update" in method text); do not put LaTeX formatting commands inside node labels. If no figure is present, one is inserted after the Method section automatically. Generic template steps are replaced with project-specific steps when possible. Horizontal layouts, backward arrows, out-of-order steps, and leaked markup are corrected automatically.
+- Avoid redundant or repetitive prose across sections. Do not repeat the same sentence in Motivation, Method, Evaluation, or Milestones; each section should add new detail.
 - Ensure LaTeX compiles under Tectonic: escape special characters in text (\\&, \\%, \\#, \\_, \\{, \\}) and avoid stray $.
 - Write the final artifact as a research proposal, not as a short course implementation report.
 - Keep the proposed research plan credible, appropriately scoped, and supported by milestones, resources, risks, and evaluation criteria.
 - Mark unsupported claims as assumptions.
 - Include a concrete agent workflow when the method involves an agent.
 - Include at least one LaTeX-native figure, diagram, workflow chart, or architecture sketch with a caption.
-- Use only citation strings from project.references in the References section. Do not invent, rename, or add citations that are not listed in project.references. In-text mentions should align with those sources.
+- Use only citation strings from project.references in the References section. Do not invent, rename, or add citations that are not listed in project.references.
+- Include in-text citations with natbib: add \\usepackage[round,authoryear]{natbib} and cite sources using \\citep{key} in Motivation, Method, and Evaluation sections. Use only keys from citationKeys in the payload. The bibliography is rebuilt at export from verified Sources.
 - The Resources section is rebuilt from project.resources at export time. Keep that field organized by category (computing, software, data, budget/support) with concrete, feasibility-oriented items. Do not invent resources that are not listed in project.resources.
-- The abstract is rebuilt at export time from project fields. Write NSF-style prose: clear problem/gap, specific objective, credible approach, evaluation criteria, and expected outcomes (roughly 150--250 words).
-- Expected Results and Research Milestones are rebuilt from project.timeline. Use milestone lines with optional timing (e.g., "Milestone 1 (Weeks 1--3): deliverable") plus explicit expected results.
-- The Evaluation Plan is rebuilt from project.evaluation. Include research questions, metrics/benchmarks, baselines, ablations, analysis plan, and success criteria with enough detail for formal review.
+- The abstract is rebuilt at export time from project fields. Write NSF-style prose: clear problem/gap, specific objective, credible approach, evaluation criteria, and expected outcomes (roughly 150--250 words). When citing prior work in the abstract, use \\citep{key} with keys from citationKeys only.
+- Expected Results and Research Milestones are rebuilt from project.timeline. Use milestone lines with optional timing (e.g., "Milestone 1 (Weeks 1--3): deliverable") plus explicit expected results. Each milestone must name a verifiable deliverable and show how the work will address the research questions and hypotheses in project.evaluation.
+- The Evaluation Plan is rebuilt from project.evaluation. Include research questions, metrics/benchmarks, baselines, ablations, analysis plan, and success criteria with enough detail for formal review. State hypotheses explicitly when applicable.
 - Mark only unsupported claims as assumptions when references are missing or vague.
 - If the project provides a "layAbstract", add a short "Plain-Language Summary" section near the top that uses that accessible text so non-expert readers can understand the work.`;
 
@@ -130,7 +147,7 @@ When task is "refine-structure", the user skipped or rejected a suggestion or de
 
 For the resources field, write formal proposal-ready entries grouped by category (Computing and Infrastructure, Software and Development Tools, Data and Model Artifacts, Budget and Institutional Support). Use one line per item in the form "Category: specific resource and brief justification."
 
-For timeline, write milestone lines ("Milestone N (timing): deliverable") and a leading expected-results summary. For evaluation, write labeled lines for research questions, metrics, baselines, ablations, analysis plan, and success criteria.`;
+For timeline, write milestone lines ("Milestone N (timing): deliverable") and a leading expected-results summary. Tie later milestones to evaluation of the stated research questions and hypotheses. For evaluation, write labeled lines for research questions, metrics, baselines, ablations, analysis plan, and success criteria.`;
 
 export async function startAgentSession(payload) {
   const project = normalizePayload(payload);
@@ -350,19 +367,26 @@ export async function refineAgentStructure(payload) {
 }
 
 export async function generateProposal(payload) {
-  const project = normalizePayload(payload);
+  const project = normalizePayload(payload.project || payload);
   const knownPapers = Array.isArray(payload.literaturePapers) ? payload.literaturePapers : [];
   const normalizedReferences = normalizeReferencesField(project.references, knownPapers);
   const normalizedResources = normalizeResourcesField(project.resources);
   const normalizedTimeline = normalizeTimelineField(project.timeline, project);
   const normalizedEvaluation = normalizeEvaluationField(project.evaluation, project);
-  const projectForDraft = {
+  const normalizedProject = {
     ...project,
     references: normalizedReferences.references || project.references,
     resources: normalizedResources.resources || project.resources,
     timeline: normalizedTimeline.timeline || project.timeline,
     evaluation: normalizedEvaluation.evaluation || project.evaluation
   };
+  const preparedProject = prepareProjectForProposal(normalizedProject);
+  const projectForDraft = preparedProject.project;
+  const redundancyPrecheck = {
+    ...preparedProject.validation,
+    scrubbed: preparedProject.scrubbed
+  };
+  const citationRegistry = buildCitationRegistry(projectForDraft.references || '', knownPapers);
   const requirements = projectForDraft.requirements || DEFAULT_REQUIREMENTS;
   const checklist = extractChecklist(requirements);
 
@@ -373,7 +397,10 @@ export async function generateProposal(payload) {
 
   return finalizeProposalOutput(result, projectForDraft, checklist, {
     referenceReport: normalizedReferences.report,
-    knownPapers
+    knownPapers,
+    milestoneValidation: normalizedTimeline.validation,
+    citationRegistry,
+    redundancyPrecheck
   });
 }
 
@@ -505,6 +532,12 @@ async function generateWithApi(project, checklist, llmModel) {
   const promptPayload = {
     project,
     checklist,
+    citationKeys: buildCitationRegistry(project.references || '', []).entries.map((entry) => ({
+      key: entry.key,
+      inText: entry.inTextParenthetical,
+      title: entry.title
+    })),
+    workflowDiagramHint: inferWorkflowStepsFromProject(project).join(' -> '),
     outputContract: {
       proposalLatex: 'Complete compile-ready LaTeX source for proposal.tex',
       complianceMatrix: 'Array of requirement coverage rows',
@@ -620,21 +653,22 @@ async function callOpenAiCompatible({ systemPrompt, payload, model, temperature 
   return readModelContent(data);
 }
 
-async function finalizeProposalOutput(result, project, checklist, options = {}) {
-  const title = project.title || project.topic || 'proposal';
-  const validation = await validateProposalLatex(result.proposalLatex, title, {
-    fallbackLatex: buildLocalProposalLatex(project)
-  });
-
+function buildEnforcedProposalLatex(baseLatex, project, options = {}) {
   const resourceEnforcement = enforceResourcesInProposalLatex(
-    validation.latex,
+    baseLatex,
     project.resources || ''
   );
-  const referenceEnforcement = enforceReferencesInProposalLatex(
+  const referenceEnforcement = enforceCitationsInProposalLatex(
     resourceEnforcement.latex,
-    project.references || ''
+    project,
+    options.citationRegistry,
+    options.knownPapers || []
   );
-  const abstractEnforcement = enforceAbstractInProposalLatex(referenceEnforcement.latex, project);
+  const abstractEnforcement = enforceAbstractInProposalLatex(
+    referenceEnforcement.latex,
+    project,
+    options.citationRegistry || referenceEnforcement.registry
+  );
   const milestoneEnforcement = enforceMilestonesInProposalLatex(
     abstractEnforcement.latex,
     project.timeline || '',
@@ -646,7 +680,102 @@ async function finalizeProposalOutput(result, project, checklist, options = {}) 
     project
   );
   const figureEnforcement = enforceFiguresInProposalLatex(evaluationEnforcement.latex, project);
-  const layoutLatex = ensureLayoutPreamble(figureEnforcement.latex);
+  let layoutLatex = ensureLayoutPreamble(figureEnforcement.latex);
+  const citationFinalize = finalizeCitationValidation(
+    layoutLatex,
+    options.citationRegistry || referenceEnforcement.registry
+  );
+  layoutLatex = repairStructuralLatex(citationFinalize.latex, {
+    title: project.title || project.topic || 'proposal',
+    author: PROPOSAL_AUTHOR
+  });
+
+  return {
+    latex: layoutLatex,
+    resourceEnforcement,
+    referenceEnforcement,
+    abstractEnforcement,
+    milestoneEnforcement,
+    evaluationEnforcement,
+    figureEnforcement,
+    citationFinalize
+  };
+}
+
+async function finalizeProposalOutput(result, project, checklist, options = {}) {
+  const title = project.title || project.topic || 'proposal';
+  const draftSources = [
+    { label: 'enforced-draft', source: result.proposalLatex },
+    { label: 'repaired-draft', source: repairUnescapedSpecialChars(result.proposalLatex) },
+    { label: 'local-fallback', source: buildLocalProposalLatex(project) }
+  ];
+
+  let validation = null;
+  let enforced = null;
+
+  for (const candidate of draftSources) {
+    const source = String(candidate.source || '').trim();
+    if (!source) continue;
+
+    enforced = buildEnforcedProposalLatex(source, project, options);
+    validation = await validateProposalLatex(enforced.latex, title, {
+      fallbackLatex: buildLocalProposalLatex(project),
+      author: PROPOSAL_AUTHOR
+    });
+    validation = {
+      ...validation,
+      usedFallback: candidate.label === 'local-fallback',
+      repaired: candidate.label !== 'enforced-draft' || validation.repaired
+    };
+
+    if (validation.validated || validation.compilerUnavailable) {
+      break;
+    }
+  }
+
+  if (!validation?.validated && !validation?.compilerUnavailable) {
+    enforced = buildEnforcedProposalLatex(buildLocalProposalLatex(project), project, options);
+    validation = await validateProposalLatex(enforced.latex, title, {
+      fallbackLatex: buildLocalProposalLatex(project),
+      author: PROPOSAL_AUTHOR
+    });
+    validation = {
+      ...validation,
+      usedFallback: true,
+      repaired: true,
+      warning:
+        validation.warning ||
+        'LaTeX compile verification failed after export enforcement; substituted compile-safe fallback proposal.'
+    };
+  }
+
+  let layoutLatex = validation.latex;
+  const finalCheck = await validateProposalLatex(layoutLatex, title, {
+    fallbackLatex: buildLocalProposalLatex(project),
+    author: PROPOSAL_AUTHOR
+  });
+  if (finalCheck.validated) {
+    layoutLatex = finalCheck.latex;
+    validation = {
+      ...validation,
+      ...finalCheck,
+      usedFallback: validation.usedFallback || finalCheck.usedFallback,
+      repaired: validation.repaired || finalCheck.repaired
+    };
+  } else if (!validation.compilerUnavailable) {
+    validation = {
+      ...finalCheck,
+      usedFallback: true,
+      warning:
+        finalCheck.warning ||
+        'Final LaTeX compile verification failed; returned the best available compile-safe draft.'
+    };
+    layoutLatex = finalCheck.latex;
+  }
+  const resourceEnforcement = enforced.resourceEnforcement;
+  const referenceEnforcement = enforced.referenceEnforcement;
+  const figureEnforcement = enforced.figureEnforcement;
+  const citationFinalize = enforced.citationFinalize;
 
   const complianceMatrix = buildComplianceMatrixFromDraft(
     checklist,
@@ -660,7 +789,21 @@ async function finalizeProposalOutput(result, project, checklist, options = {}) 
     options.referenceReport,
     referenceEnforcement
   );
+  evaluationReport = appendInTextCitationNote(evaluationReport, {
+    ...referenceEnforcement,
+    inTextCount: citationFinalize.inTextCount,
+    validation: citationFinalize.validation
+  });
   evaluationReport = appendDiagramValidationNote(evaluationReport, figureEnforcement);
+  evaluationReport = appendMilestoneValidationNote(
+    evaluationReport,
+    options.milestoneValidation || milestoneEnforcement.validation
+  );
+  const redundancyPostcheck = validateLatexRedundancy(layoutLatex);
+  evaluationReport = appendRedundancyNote(evaluationReport, {
+    precheck: options.redundancyPrecheck || {},
+    postcheck: redundancyPostcheck
+  });
 
   return {
     ...result,
@@ -677,13 +820,24 @@ async function finalizeProposalOutput(result, project, checklist, options = {}) 
     referenceValidation: {
       entryCount: referenceEnforcement.entryCount,
       sectionReplaced: referenceEnforcement.replaced,
+      inTextCount: citationFinalize.inTextCount || referenceEnforcement.inTextCount || 0,
+      bibliographyCount: referenceEnforcement.bibliographyCount || 0,
+      citationValidation: citationFinalize.validation,
       ...(options.referenceReport || {})
     },
     diagramValidation: {
       figuresRebuilt: figureEnforcement.replaced || 0,
+      figureInjected: Boolean(figureEnforcement.injected),
       validations: figureEnforcement.validations || []
     }
   };
+}
+
+function appendMilestoneValidationNote(report, validation) {
+  const base = clean(report) || '# Evaluation Report\n\nNo evaluation report returned.';
+  const note = formatMilestoneValidationNote(validation);
+  if (!note) return base;
+  return `${base}${note}`;
 }
 
 function appendLatexValidationNote(report, validation) {
@@ -693,9 +847,21 @@ function appendLatexValidationNote(report, validation) {
   if (validation.usedFallback) {
     notes.push('- LaTeX compile verification failed for the model draft, so a compile-safe fallback proposal was substituted.');
   } else if (validation.repaired) {
-    notes.push('- LaTeX compile verification repaired unescaped special characters before export.');
+    notes.push('- LaTeX compile verification repaired structural or escaping issues before export.');
   } else if (validation.validated) {
-    notes.push('- LaTeX compile verification passed before export.');
+    notes.push('- LaTeX compile verification passed on the final enforced proposal.');
+  }
+
+  for (const issue of validation.structureAudit?.issues || []) {
+    notes.push(`- Structure check: ${issue}`);
+  }
+
+  if (!validation.validated) {
+    for (const attempt of validation.attempts || []) {
+      if (attempt.error) {
+        notes.push(`- Compile attempt (${attempt.label}) failed: ${attempt.error}`);
+      }
+    }
   }
 
   if (validation.warning) {
@@ -752,6 +918,10 @@ ${questions.length ? questions.map((question) => `- ${question}`).join('\n') : '
   };
 }
 
+export function buildFallbackProposalLatex(project) {
+  return buildLocalProposalLatex(project);
+}
+
 function buildLocalProposalLatex(project) {
   const title = project.title || project.topic;
   const problem = project.problem || PROJECT_FALLBACKS.problem;
@@ -771,20 +941,17 @@ function buildLocalProposalLatex(project) {
 \setlist[itemize]{leftmargin=*,itemsep=0.35em,parsep=0pt,topsep=0.35em,partopsep=0pt}
 \setlist{nosep}
 \title{${escapeLatex(title)}}
-\author{}
+\author{${escapeLatex(PROPOSAL_AUTHOR)}}
 \date{}
 
 \begin{document}
 \maketitle
 
-\begin{abstract}
+\section*{Abstract}
 ${buildAbstractLatexBody(project)}
-\end{abstract}
 ${plainLanguageSummarySection(project)}
 \section{Motivation and Gap}
 ${latexParagraph(problem)}
-
-Compact language models still lag on multi-step grade-school math despite strong general instruction tuning. \textbf{Assumption:} dense process rewards and executable verification are necessary for stable gains at the 2B scale.
 
 \section{Project Goal}
 Show that a process-reward RL stack with curriculum learning and self-consistency can improve exact-match accuracy on math word problems relative to supervised fine-tuning alone, while remaining more stable than naive PPO training.
@@ -801,18 +968,7 @@ ${latexParagraph(method)}
 \end{enumerate}
 
 \section{Figure}
-${buildFigureEnvironment(
-    inferWorkflowStepsFromProject({
-      method:
-        'Math prompt $\\rightarrow$ multi-sample rollouts $\\rightarrow$ dense process rewards $\\rightarrow$ group-relative RL update $\\rightarrow$ curriculum schedule $\\rightarrow$ majority-vote answer'
-    }),
-    'Training workflow: process rewards, code verification, curriculum, and self-consistency.',
-    '[h]',
-    {
-      title: 'Training Workflow Diagram',
-      footnote: '(Iterative loop until convergence)'
-    }
-  )}
+${buildProjectWorkflowFigure(project).replacement}
 
 \section{Expected Results and Research Milestones}
 ${buildMilestonesLatexSection(timeline, project)}
@@ -1074,7 +1230,7 @@ function buildFieldSuggestions(project) {
       label: 'Research Milestones',
       value: project.timeline || PROJECT_FALLBACKS.timeline,
       confidence: project.timeline ? 'High' : 'Medium',
-      reason: 'List expected results plus timed milestones with verifiable deliverables.'
+      reason: 'List expected results plus timed milestones with verifiable deliverables that address the research questions and hypotheses.'
     },
     {
       field: 'resources',
@@ -1370,11 +1526,23 @@ function findRequirementEvidence(requirement, project) {
   if (/motivation|gap|problem/.test(text) && project.problem) return project.problem;
   if (/goal/.test(text) && project.title) return 'Goal section is generated from the project topic.';
   if (/method|workflow|approach/.test(text) && project.method) return project.method;
-  if (/expected|milestone|timeline/.test(text) && project.timeline) return project.timeline;
+  if (/expected|milestone|timeline/.test(text) && project.timeline) {
+    const validation = validateMilestonePlan(project.timeline, project);
+    if (validation.ok && validation.milestoneCount >= 3) {
+      return `${validation.milestoneCount} phased milestones with expected results and research-question alignment.`;
+    }
+    return project.timeline;
+  }
   if (/evaluation|metric|test/.test(text) && project.evaluation) return project.evaluation;
   if (/risk|mitigation/.test(text)) return 'Fallback draft includes risks and mitigations.';
   if (/resource|budget|tool/.test(text) && project.resources) return project.resources;
-  if (/reference|assumption|source/.test(text) && project.references) return project.references;
+  if (/reference|assumption|source/.test(text) && project.references) {
+    const registry = buildCitationRegistry(project.references, []);
+    if (registry.entries.length) {
+      return `${registry.entries.length} verified bibliography entries with author--year citation keys.`;
+    }
+    return project.references;
+  }
 
   return '';
 }
@@ -1705,7 +1873,12 @@ function findEvidenceInLatex(requirement, proposalLatex) {
   if (/title/.test(text) && (latex.includes('\\title{') || latex.includes('\\maketitle'))) {
     return 'Proposal draft includes a title block.';
   }
-  if (/abstract/.test(text) && (latex.includes('\\begin{abstract}') || latexSectionMatches(latex, ['abstract']))) {
+  if (
+    /abstract/.test(text) &&
+    (latex.includes('\\begin{abstract}') ||
+      /\\section\*?\{Abstract\}/i.test(latex) ||
+      latexSectionMatches(latex, ['abstract']))
+  ) {
     return 'Proposal draft includes an abstract section.';
   }
   if (/motivation|gap/.test(text) && (latexSectionMatches(latex, ['motivation', 'gap', 'problem']) || /research gap/i.test(latex))) {
@@ -1735,7 +1908,10 @@ function findEvidenceInLatex(requirement, proposalLatex) {
   if (/resource|budget/.test(text) && latexSectionMatches(latex, ['resource', 'budget', 'compute'])) {
     return 'Proposal draft includes resources or budget notes.';
   }
-  if (/reference|assumption|source/.test(text) && (latexSectionMatches(latex, ['reference', 'bibliography', 'source', 'assumption']) || /\\begin{thebibliography}/.test(latex))) {
+  if (/reference|assumption|source/.test(text) && (latexSectionMatches(latex, ['reference', 'bibliography', 'source', 'assumption']) || /\\begin\{thebibliography\}/.test(latex))) {
+    if (/\\cite[tp]?\{/.test(latex)) {
+      return 'Proposal draft includes a bibliography and natbib in-text citations.';
+    }
     return 'Proposal draft includes references or source notes.';
   }
 

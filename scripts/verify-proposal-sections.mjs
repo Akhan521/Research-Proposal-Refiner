@@ -9,7 +9,8 @@ import {
   enforceEvaluationInProposalLatex,
   enforceMilestonesInProposalLatex,
   normalizeEvaluationField,
-  normalizeTimelineField
+  normalizeTimelineField,
+  validateMilestonePlan
 } from '../server/proposalSections.js';
 import { ensureLayoutPreamble } from '../server/latexLayout.js';
 import { compileLatexDocument } from '../server/pdfExport.js';
@@ -23,6 +24,12 @@ assert.ok(/accuracy|evaluat|assess/i.test(abstract), 'abstract mentions evaluati
 
 const normalizedTimeline = normalizeTimelineField(project.timeline, project);
 assert.match(normalizedTimeline.timeline, /Milestone 1/i);
+assert.ok(normalizedTimeline.validation.milestoneCount >= 3, 'timeline should include multiple milestones');
+assert.ok(
+  normalizedTimeline.validation.researchQuestionCount >= 1,
+  'evaluation should include research questions or hypotheses'
+);
+assert.equal(normalizedTimeline.validation.ok, true, normalizedTimeline.validation.warnings.join('; '));
 
 const normalizedEvaluation = normalizeEvaluationField(project.evaluation, project);
 assert.match(normalizedEvaluation.evaluation, /Research Questions and Hypotheses/i);
@@ -31,7 +38,10 @@ assert.match(normalizedEvaluation.evaluation, /Success Criteria/i);
 const milestonesLatex = buildMilestonesLatexSection(normalizedTimeline.timeline, project);
 assert.match(milestonesLatex, /Expected Results/);
 assert.match(milestonesLatex, /Research Milestones and Timeline/);
-assert.match(milestonesLatex, /Milestone 1/);
+assert.match(milestonesLatex, /\\begin\{enumerate\}/);
+assert.doesNotMatch(milestonesLatex, /\\item \\textbf\{Milestone \d+/);
+assert.match(milestonesLatex, /\\textbf\{Weeks 1--3\.\}/);
+assert.match(milestonesLatex, /Research Questions and Hypotheses Addressed/);
 
 const evaluationLatex = buildEvaluationLatexSection(normalizedEvaluation.evaluation, project);
 assert.match(evaluationLatex, /Research Questions and Hypotheses/);
