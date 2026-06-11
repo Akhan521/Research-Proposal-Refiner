@@ -1,8 +1,8 @@
 # Stage 2: Refined Agent + Workflow Usage
 
-Stage 2 evaluates whether you refined the Stage 1 workflow or agent and used it to generate, revise, or evaluate proposal content.
+> **Note:** For this course offering, Stage 2 and the final proposal are submitted together. See [SUBMISSION_CHECKLIST.md](SUBMISSION_CHECKLIST.md) and the repository root [workflow_usage.md](../workflow_usage.md).
 
-The final proposal PDF is submitted in Stage 3. Stage 2 focuses on workflow usage evidence.
+Stage 2 evaluates whether you refined the Stage 1 workflow or agent and used it to generate, revise, or evaluate proposal content.
 
 ## Due Date
 

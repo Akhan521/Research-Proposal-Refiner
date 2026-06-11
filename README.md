@@ -1,165 +1,170 @@
-# Three-Stage Final Project: Research Proposal Agent
+# Research Proposal Refiner
 
-## Goal
+A full-stack **research proposal agent** that helps you move from a rough idea to a structured NSF-style proposal PDF. The app collects your research context, retrieves relevant literature, asks clarifying questions, drafts LaTeX, scores coverage with a compliance matrix, critiques weak sections, and exports a compiled PDF.
 
-Build and evaluate a research proposal workflow. The project is not just about producing one polished PDF. It asks you to show that you understand how strong proposals are written, how an agent can support that process, and how the final proposal can be evaluated.
+**Final proposal topic:** Process-based reinforcement learning with step-level rewards for mathematical reasoning in language models (GRPO, process reward models, and MCTS-guided search).
 
-You will complete the final project in three stages:
+## What this project does
 
-1. **Stage 1: Initial Agent + Workflow Design**
-   - Build an initial agent or prototype through vibe coding.
-   - Research proposal-writing guides, examples, and agent workflow patterns.
-   - Submit a 5-minute presentation video of your workflow design.
-   - Attend the mandatory in-person presentation session to show your motivation, idea, and goal.
-   - A polished proposal is not required in this stage.
+| Capability | Description |
+| --- | --- |
+| **Literature search** | Retrieves papers from Semantic Scholar, OpenAlex, and arXiv; synthesizes related work from your selections |
+| **Agent intake** | Asks structured questions and merges your answers into a shared project state |
+| **Field refinement** | AI-assisted rewriting per field (problem, method, evaluation, timeline, resources) |
+| **Proposal generation** | Produces LaTeX with required sections, citations, workflow diagram, and milestones |
+| **Quality checks** | Compliance matrix, redundancy scan, milestone–RQ mapping, evaluation report |
+| **Explain** | Plain-language summary at an adjustable reading level |
+| **PDF export** | Server-side LaTeX compile with enforcement, repair, and validation |
 
-2. **Stage 2: Refined Agent + Workflow Usage**
-   - Refine the Stage 1 agent or workflow.
-   - Show how the agent/workflow is used to generate, revise, and evaluate proposal content.
-   - Submit usage evidence such as logs, transcripts, screenshots, and review artifacts.
+The server **rebuilds critical sections at export time** (abstract, milestones, evaluation plan, diagram, bibliography) from your project fields so the PDF stays aligned with your latest edits.
 
-3. **Stage 3: Final Proposal**
-   - Submit the final `proposal.pdf`.
-   - The proposal is graded separately for research proposal quality.
-   - The proposal should not be framed as a short course implementation report; the course deadline and the proposed research timeline are separate.
+## Quick links
 
-If you use vibe coding only to directly produce a proposal, you can receive Stage 3 proposal credit. However, Stage 2 credit requires evidence that your own workflow or agent guided the proposal creation process.
+| Artifact | Path |
+| --- | --- |
+| Final proposal (PDF) | [deliverables/proposal.pdf](deliverables/proposal.pdf) |
+| LaTeX source | [deliverables/proposal.tex](deliverables/proposal.tex) |
+| Workflow usage report | [workflow_usage.md](workflow_usage.md) |
+| AI usage log | [AI_USAGE.md](AI_USAGE.md) |
+| Evidence folder | [evidence/](evidence/) |
+| Submission index | [deliverables/README.md](deliverables/README.md) |
+| Stage 2 checklist | [docs/SUBMISSION_CHECKLIST.md](docs/SUBMISSION_CHECKLIST.md) |
+| API setup details | [docs/API_USAGE.md](docs/API_USAGE.md) |
 
-## Deadlines And Submission Requirements
+## Requirements
 
-All deadlines use Pacific Time.
+- **Node.js** 20.19+ or 22.12+ (see `.nvmrc`)
+- **npm** 9+
+- Optional: **OpenRouter API key** for cloud LLM generation (local fallback works without a key)
 
-| Stage | Due Date | Submit | Notes |
-| --- | --- | --- | --- |
-| Stage 1: Initial Agent + Workflow Design | Friday, June 5, 2026, 11:59 PM | 5-minute presentation video, initial agent/prototype artifact, optional screenshots or interaction trace. | Stage 1 is graded from the video. The in-person presentation is mandatory but not separately graded; it is for showing motivation, ideas, goals, and peer feedback. Late submissions accepted until Sunday, June 7, 2026, 11:59 PM with a 20% penalty. |
-| Stage 2: Refined Agent + Workflow Usage | Friday, June 12, 2026, 11:59 PM | Refined agent/workflow, `workflow_usage.md`, run evidence, `AI_USAGE.md`. | Late submissions accepted until Sunday, June 14, 2026, 11:59 PM with a 20% penalty. |
-| Stage 3: Final Proposal | Friday, June 12, 2026, 11:59 PM | `proposal.pdf`, proposal source, references or source notes, figure/diagram source if applicable. | Late submissions accepted until Sunday, June 14, 2026, 11:59 PM with a 20% penalty. |
-
-## Optional Starter App
-
-This repository includes a small starter app to illustrate one possible proposal-agent workflow. It is optional: you may use it, replace it, or ignore it.
-
-Example starter screens:
-
-![Starter app workflow screen](docs/assets/starter-app-workflow.png)
-
-![Starter app proposal preview screen](docs/assets/starter-app-proposal-preview.png)
-
-To run the starter:
+## Setup
 
 ```bash
+git clone https://github.com/Akhan521/Research-Proposal-Refiner.git
+cd Research-Proposal-Refiner   # or your fork path
 npm install
+```
+
+### Configure the LLM (recommended: OpenRouter)
+
+1. Copy the environment template:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Create an API key at [openrouter.ai](https://openrouter.ai/).
+
+3. Edit `.env`:
+
+   ```bash
+   PORT=8787
+   LLM_PROVIDER=openai-compatible
+   LLM_API_URL=https://openrouter.ai/api/v1/chat/completions
+   LLM_API_KEY=sk-or-v1-your_key_here
+   LLM_MODEL=openrouter/owl-alpha
+
+   # Optional: extra models in the sidebar dropdown (comma-separated)
+   # LLM_ALLOWED_MODELS=openrouter/owl-alpha,anthropic/claude-sonnet-4
+
+   # Optional OpenRouter attribution
+   OPENROUTER_HTTP_REFERER=http://127.0.0.1:5174
+   OPENROUTER_APP_TITLE=Research Proposal Agent
+   ```
+
+4. **Never commit `.env`.** Keys stay on the server only.
+
+### Local fallback (no API key)
+
+If `LLM_API_KEY` or `LLM_API_URL` is missing, the app still runs with deterministic template-based questions, proposal text, and reports. Cloud models are required for the full agentic experience.
+
+### Optional: Semantic Scholar
+
+For higher literature rate limits, set `SEMANTIC_SCHOLAR_API_KEY` in `.env`. Set `LITERATURE_SKIP_ENRICH=1` to skip LLM ranking when quota is low.
+
+## Run
+
+Start the API and web UI together:
+
+```bash
 npm run dev
 ```
 
-Open:
+| Service | URL |
+| --- | --- |
+| Web UI | http://127.0.0.1:5174 |
+| API | http://127.0.0.1:8787 |
 
-```text
-http://127.0.0.1:5174
+Run only the API or only the frontend:
+
+```bash
+npm run dev:api   # Express on port 8787
+npm run dev:web   # Vite on port 5174
 ```
 
-We encourage students to start with the [Gemini API free tier](https://ai.google.dev/gemini-api/docs/pricing). If the free tier is not enough for your project, email the TA at <yfu093@ucr.edu> to request additional API access. Keep all API keys out of GitHub and document your setup.
+Production-style API only:
 
-## Resources
+```bash
+npm start
+```
 
-Vibe coding tools:
+After changing `.env`, restart the dev server.
 
-- [Cursor](https://cursor.com/en/students). Students can apply for a student account with their `.edu` email; contact Cursor through the official student page if you need help with the application.
-- [GitHub Copilot](https://docs.github.com/en/copilot/how-tos/copilot-on-github/set-up-copilot/enable-copilot/set-up-for-students)
-- [Google Gemini API](https://ai.google.dev/gemini-api/docs/pricing)
-- [Google Gemini Code Assist](https://developers.google.com/gemini-code-assist/resources/faqs)
-- [Claude / Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)
-- [Windsurf](https://windsurf.com/windsurf/students)
-- [Cline](https://docs.cline.bot/introduction/overview) / [Roo Code](https://roocode.com/)
-- [ChatGPT](https://chatgpt.com/)
-- [v0 by Vercel](https://v0.dev/)
+## Typical workflow
 
-Tool availability, student plans, and free tiers can change. Check the official pages before relying on a specific plan.
+1. **Literature** — search topic; select papers; copy synthesis into motivation or Sources.
+2. **Project** — fill problem, method, evaluation, timeline, resources, references.
+3. **Agent** — answer clarifying questions; merge suggestions into project state.
+4. **Strengthen** — refine individual fields with AI guidance.
+5. **Output** — generate proposal; read compliance matrix and evaluation report.
+6. **Revise** — update fields; regenerate until reports are clean.
+7. **Export** — download PDF (`proposal.tex` is enforced server-side before compile).
 
-Proposal-agent inspiration:
+Document your run in [workflow_usage.md](workflow_usage.md) and [AI_USAGE.md](AI_USAGE.md). Add screenshots to [evidence/](evidence/).
 
-- [Civio](https://www.civio.ai/) shows how proposal and compliance workflows can become real products. A strong class project can be more than a demo; it can point toward a startup-style opportunity if it solves a real workflow pain.
-
-## Stage 1 Deliverables
-
-Stage 1 focuses on initial agent design and workflow thinking. A polished proposal is not required.
-
-Submit:
-
-- initial agent or prototype demo artifact;
-- 5-minute presentation video or link;
-- mandatory in-person presentation for demonstration and feedback;
-- optional screenshots or interaction trace.
-
-Details: [docs/stage_1_workflow_design.md](docs/stage_1_workflow_design.md)
-
-## Stage 2 Deliverables
-
-Stage 2 focuses on refined agent behavior and workflow usage evidence.
-
-Submit:
-
-- refined agent implementation or reproducible workflow artifact;
-- `workflow_usage.md`;
-- run transcript, screenshots, logs, or demo;
-- `AI_USAGE.md`;
-
-Details: [docs/stage_2_workflow_usage.md](docs/stage_2_workflow_usage.md)
-
-## Stage 3 Deliverables
-
-Stage 3 focuses on final proposal quality.
-
-Submit:
-
-- `proposal.pdf`;
-- `proposal.tex` or equivalent proposal source;
-- references or source notes;
-- figure or diagram source if applicable.
-
-Details: [docs/stage_3_final_proposal.md](docs/stage_3_final_proposal.md)
-
-## Required Proposal Requirements
-
-The final proposal requirements are in:
-
-[docs/proposal_requirements.md](docs/proposal_requirements.md)
-
-Detailed grading is in one file:
-
-[docs/grading_rubric.md](docs/grading_rubric.md)
-
-## Grading Overview
-
-Total: 100 points.
-
-Bonus: up to 5 subjective points for unusually impressive work.
-
-| Stage | Points | What It Evaluates |
-| --- | ---: | --- |
-| Stage 1: Initial Agent + Workflow Design | 30 | Initial agent/prototype, vibe coding demo, proposal-writing research, workflow thinking, and presentation. |
-| Stage 2: Refined Agent + Workflow Usage | 20 | Evidence that the refined agent/workflow was used to generate, revise, and evaluate proposal content. |
-| Stage 3: Final Proposal | 50 | Quality of the submitted `proposal.pdf`, including format, figure, logic, novelty, method, evaluation, feasibility, and writing. |
-
-Detailed grading: [docs/grading_rubric.md](docs/grading_rubric.md)
-
-## Suggested Repo Layout
+## Repository layout
 
 ```text
 .
-├── README.md
-├── workflow_usage.md
-├── proposal.pdf
-├── proposal.tex
-├── AI_USAGE.md
-├── evidence/
-└── source-code-or-workflow/
+├── deliverables/             # Final proposal.pdf, proposal.tex
+├── workflow_usage.md         # How the agent workflow was used
+├── AI_USAGE.md               # Tools, models, human review
+├── evidence/                 # Screenshots and workflow trace
+├── src/                      # React frontend (App.jsx)
+├── server/                   # Express API and LaTeX pipeline
+│   ├── proposalGenerator.js  # Generation + export enforcement
+│   ├── proposalSections.js   # Abstract, milestones, evaluation
+│   ├── latexDiagram.js       # Workflow figure generation
+│   ├── citationEnforce.js    # Citations and bibliography
+│   └── pdfExport.js          # PDF compile (Tectonic)
+├── shared/mathlmDefaults.js  # Default project fields
+├── scripts/                  # Verification and smoke tests
+└── docs/                     # Requirements, rubric, API notes
 ```
 
-## Bottom Line
+## Verification scripts
 
-Stage 1 asks: **What is your initial agent and proposal-writing workflow idea?**
+```bash
+node scripts/verify-proposal-sections.mjs
+node scripts/verify-diagram-layout.mjs
+node scripts/verify-abstract-format.mjs
+node scripts/verify-latex-compile.mjs
+node scripts/smoke-proposal.mjs
+```
 
-Stage 2 asks: **Did you refine and actually use that agent/workflow to produce proposal artifacts?**
+## Course submission (Stage 2 — merged final)
 
-Stage 3 asks: **Is the final proposal itself strong?**
+Stage 2 and the final proposal are submitted together. See [docs/SUBMISSION_CHECKLIST.md](docs/SUBMISSION_CHECKLIST.md) for the full mapping to Canvas expectations.
+
+**Submit the repository** (or a zip) with:
+
+- Full source code (`src/`, `server/`, etc.)
+- `deliverables/proposal.pdf` and `deliverables/proposal.tex`
+- `workflow_usage.md` and `AI_USAGE.md`
+- Evidence in `evidence/` (screenshots recommended)
+
+**Exclude:** `node_modules/`, `.env`, secrets, and API keys.
+
+## Author
+
+Aamir Khan — CS 222 Spring Final Project
