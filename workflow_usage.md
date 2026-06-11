@@ -13,14 +13,14 @@ Train language models for multi-step math reasoning using **dense process-level 
 
 | Step | What happened | Artifact or evidence |
 | --- | --- | --- |
-| Literature intake | Searched Semantic Scholar / OpenAlex / arXiv for PRMs, process supervision, and math-reasoning RL papers; selected top sources for related work | `evidence/` screenshots; Sources field in app |
+| Literature intake | Searched Semantic Scholar / OpenAlex / arXiv for PRMs, process supervision, and math-reasoning RL papers; selected top sources for related work | `evidence/literature-search.png`, `evidence/literature-summary.png` |
 | Clarifying questions | Agent asked about benchmarks, baselines, and evaluation metrics; answers updated project state | Agent Q&A tab transcripts |
 | Field refinement | Used per-field **Strengthen with AI** on problem, method, evaluation, and timeline | Revised project fields before export |
 | Literature synthesis | Selected papers fed into related-work paragraph for motivation | Motivation section in `deliverables/proposal.tex` |
 | Draft generation | **Generate proposal** produced LaTeX draft + compliance matrix + evaluation report | `deliverables/proposal.tex` first pass |
-| Critique | Compliance matrix flagged missing sections; evaluation report noted redundancy and citation issues | Evaluation report in Output tab |
+| Critique | Compliance matrix flagged missing sections; evaluation report noted redundancy and citation issues | `evidence/compliance-matrix.png`, `evidence/compliance-matrix-continued.png` |
 | Revision loop | Regenerated weak sections, limited references to top 5, fixed diagram labels and abstract formatting | Git history; `server/` enforcement pipeline |
-| Export | **Download PDF** compiled final LaTeX through Tectonic with structural repair | `deliverables/proposal.pdf` |
+| Export | **Download PDF** compiled final LaTeX through Tectonic with structural repair | `evidence/output-run-log-pdf-preview.png`, `deliverables/proposal.pdf` |
 
 ## Accepted and rejected suggestions
 

@@ -45,4 +45,14 @@ Representative commits on `main`:
 | Usage report | `workflow_usage.md` |
 | AI log | `AI_USAGE.md` |
 
-**Screenshot placeholders:** add PNGs to this folder before submission (literature tab, output tab with compliance matrix, PDF preview).
+## Screenshots (in this folder)
+
+1. `start-workflow.png` — entered rough idea; workflow stages visible
+2. `structure-agent-decisions.png` — accepted GRPO + MCTS structure suggestions
+3. `literature-search.png` — retrieved 8 papers from OpenAlex
+4. `literature-summary.png` — inserted related-work summary into Problem & Sources
+5. `project-problem-editor.png` — edited motivation/gap text in Project tab
+6. `project-problem-ai-refine.png` — used Strengthen with AI on Problem field
+7. `compliance-matrix.png` + `compliance-matrix-continued.png` — 12/12 coverage after draft
+8. `explain-tab-lay-summary.png` — generated lay summary via Explain tab
+9. `output-run-log-pdf-preview.png` — run log (Draft → Review → Export → Explain) and PDF preview

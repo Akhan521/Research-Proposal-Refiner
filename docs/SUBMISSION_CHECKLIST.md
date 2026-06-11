@@ -15,7 +15,7 @@ Stage 1 is complete separately. This checklist covers the **merged Stage 2 + fin
 | Use agent to draft proposal | ✅ | Documented in `workflow_usage.md` |
 | Use agent to critique / revise | ✅ | Compliance matrix, evaluation report, revision loops in `workflow_usage.md` |
 | `workflow_usage.md` | ✅ | Repository root |
-| Run evidence (logs, screenshots, demo) | ⚠️ | `evidence/workflow-trace.md` + **add screenshots before zip** |
+| Run evidence (logs, screenshots, demo) | ✅ | `evidence/*.png` + `evidence/workflow-trace.md` |
 | `AI_USAGE.md` | ✅ | Repository root |
 | `proposal.pdf` | ✅ | `deliverables/proposal.pdf` |
 | `proposal.tex` (or equivalent source) | ✅ | `deliverables/proposal.tex` |
@@ -47,7 +47,7 @@ Stage 1 is complete separately. This checklist covers the **merged Stage 2 + fin
 
 ## Before you zip or push
 
-- [ ] Add 3–5 screenshots to `evidence/` (literature, output, PDF preview)
+- [x] Screenshots in `evidence/` (literature, structure, compliance matrix, explain, output/PDF)
 - [ ] Confirm `npm run dev` works on a clean clone with your `.env` locally (do not upload `.env`)
 - [ ] Open `deliverables/proposal.pdf` and verify title, abstract, diagram, and references
 - [ ] Run `node scripts/verify-latex-compile.mjs` if you changed the pipeline
