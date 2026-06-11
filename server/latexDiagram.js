@@ -5,7 +5,25 @@ const BACKWARD_ARROW_PATTERN = /(?:\\leftarrow|\\gets|\$\\leftarrow\$|←|<-|&lt
 const UP_ARROW_PATTERN = /(?:\\uparrow|\$\\uparrow\$|↑)/;
 const MAX_HORIZONTAL_NODES = 3;
 const MAX_HORIZONTAL_CHARS = 72;
-const MAX_LABEL_CHARS = 34;
+const MAX_LABEL_CHARS = 52;
+const TITLE_MAX_CHARS = 96;
+const CAPTION_MAX_CHARS = 220;
+const WORKFLOW_FILLER_PREFIX =
+  /^(?:we will|this (?:proposal|project) will|the (?:proposal|project) will|our (?:approach|method) (?:will|is to)|to)\s+/i;
+const WORKFLOW_LABEL_NORMALIZATIONS = [
+  [/group[- ]relative policy optimization|\bgrpo\b(?:\s*\([^)]*\))?/i, 'GRPO policy optimization'],
+  [/monte carlo tree search|\bmcts\b/i, 'Monte Carlo Tree Search'],
+  [/synthetic step[- ]level (?:data|rewards?)|step[- ]level (?:training )?data/i, 'Synthetic step-level data'],
+  [/process[- ]level rewards?|dense process rewards?/i, 'Dense process rewards'],
+  [/process reward model|\bprm\b/i, 'Process reward model'],
+  [/reasoning path exploration|reasoning step generation/i, 'Reasoning step generation'],
+  [/multi-?sample rollouts?/i, 'Multi-sample rollouts'],
+  [/curriculum scheduling|difficulty curriculum/i, 'Curriculum scheduling'],
+  [/self-consistency|majority vote/i, 'Self-consistency voting'],
+  [/executable (?:python )?verification|code verification/i, 'Executable verification'],
+  [/benchmark evaluation|exact-match/i, 'Benchmark evaluation'],
+  [/policy optimization|policy update/i, 'Policy optimization']
+];
 const GENERIC_WORKFLOW_LABELS = [
   /^problem definition$/i,
   /^core method implementation$/i,
@@ -99,7 +117,7 @@ export function sanitizeDiagramLabel(raw, maxLength = MAX_LABEL_CHARS) {
 
   if (!text) return '';
 
-  return shortenLabel(text, maxLength);
+  return fitLabelAtWordBoundary(text, maxLength);
 }
 
 function stripLatexMarkup(raw) {
@@ -169,12 +187,16 @@ export function sanitizeDiagramSteps(steps) {
 
 export function validateDiagramContent(steps, metadata = {}) {
   const stepResults = sanitizeDiagramSteps(steps);
-  const titleResult = validateDiagramLabelContent(metadata.title || 'Agent Workflow Diagram', 'Diagram title');
+  const titleResult = validateDiagramLabelContent(
+    metadata.title || 'Agent Workflow Diagram',
+    'Diagram title',
+    TITLE_MAX_CHARS
+  );
   const footnoteResult = metadata.footnote
     ? validateDiagramLabelContent(metadata.footnote, 'Diagram note', 100)
     : { ok: true, issues: [], sanitized: '', original: '', corrected: false };
   const captionResult = metadata.caption
-    ? validateDiagramLabelContent(metadata.caption, 'Figure caption', 180)
+    ? validateDiagramLabelContent(metadata.caption, 'Figure caption', CAPTION_MAX_CHARS)
     : { ok: true, issues: [], sanitized: '', original: '', corrected: false };
 
   const issues = [
@@ -209,8 +231,10 @@ export function validateDiagramContent(steps, metadata = {}) {
 export function verifyRenderedDiagramContent(latex) {
   const body = String(latex || '');
   const issues = [];
-  const nodePattern = /\\fbox\{\\parbox\{[^}]*\}\{[^}]*\\centering\s*([^}]*)\}/g;
-  const nodes = [...body.matchAll(nodePattern)].map((match) => sanitizeDiagramLabel(match[1] || ''));
+  const nodePattern = /\\fbox\{\\parbox\{[^}]*\}\{(?:\\centering)?\\small\s*([\s\S]*?)\}\}/g;
+  const nodes = [...body.matchAll(nodePattern)].map((match) =>
+    sanitizeDiagramLabel(String(match[1] || '').replace(/\\\\/g, ' '))
+  );
 
   if (!nodes.length) {
     issues.push('Rendered diagram is missing validated node boxes.');
@@ -235,6 +259,9 @@ export function verifyRenderedDiagramContent(latex) {
     }
     if (/^@|@{}|^\s*c@\s*$/i.test(node)) {
       issues.push(`Rendered node ${index + 1} looks like table markup instead of workflow text.`);
+    }
+    if (node.endsWith('...')) {
+      issues.push(`Rendered node ${index + 1} appears truncated ("${previewLabel(node, 32)}").`);
     }
   }
 
@@ -264,11 +291,87 @@ function previewLabel(label, maxLength = 48) {
   return `${value.slice(0, maxLength - 1)}…`;
 }
 
-function shortenLabel(label, maxLength = MAX_LABEL_CHARS) {
+function fitLabelAtWordBoundary(label, maxLength = MAX_LABEL_CHARS) {
   const value = clean(label);
-  if (value.length <= maxLength) return value;
-  const trimmed = value.slice(0, Math.max(1, maxLength - 3)).trim();
+  if (!value || value.length <= maxLength) return value;
+
+  const slice = value.slice(0, maxLength);
+  const lastPeriod = Math.max(slice.lastIndexOf('. '), slice.lastIndexOf('! '), slice.lastIndexOf('? '));
+  if (lastPeriod >= Math.floor(maxLength * 0.55)) {
+    return slice.slice(0, lastPeriod + 1).trim();
+  }
+
+  const lastSpace = slice.lastIndexOf(' ');
+  if (lastSpace >= Math.min(12, Math.floor(maxLength * 0.45))) {
+    return slice.slice(0, lastSpace).trim();
+  }
+
+  return slice.trim();
+}
+
+function shortenLabel(label, maxLength = MAX_LABEL_CHARS, options = {}) {
+  const { ellipsis = false } = options;
+  const fitted = fitLabelAtWordBoundary(label, maxLength);
+  if (!ellipsis || fitted.length >= clean(label).length) {
+    return fitted;
+  }
+
+  const trimmed = fitted.slice(0, Math.max(1, fitted.length - 3)).trim();
   return `${trimmed}...`;
+}
+
+function capitalizeLabel(label) {
+  const value = clean(label);
+  if (!value) return '';
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function condenseToWorkflowLabel(raw, maxLength = MAX_LABEL_CHARS) {
+  let text = decodeLatexEscapes(String(raw || ''));
+  text = text.replace(/\$([^$]+)\$/g, '$1');
+  text = stripLatexCommands(text);
+  text = text.replace(/[—–]/g, '-');
+  text = text.replace(/[{}\\$#%^~]/g, ' ');
+  text = text.replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+
+  const hadFiller = WORKFLOW_FILLER_PREFIX.test(text);
+  text = text.replace(WORKFLOW_FILLER_PREFIX, '');
+  text = text.replace(/^(?:use|employ|apply|implement|leverage)\s+/i, '');
+  text = text.replace(/[.!?]+$/, '').trim();
+
+  if (!hadFiller && text.length <= 36) {
+    return capitalizeLabel(fitLabelAtWordBoundary(text, maxLength));
+  }
+
+  for (const [pattern, replacement] of WORKFLOW_LABEL_NORMALIZATIONS) {
+    if (pattern.test(text)) {
+      return replacement;
+    }
+  }
+
+  return capitalizeLabel(fitLabelAtWordBoundary(text, maxLength));
+}
+
+function wrapLabelForParbox(label, maxCharsPerLine = 30) {
+  const words = clean(label).split(/\s+/).filter(Boolean);
+  if (!words.length) return '';
+
+  const lines = [];
+  let current = '';
+
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length > maxCharsPerLine && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  }
+
+  if (current) lines.push(current);
+  return lines.map((line) => formatEntryForLatex(line)).join(' \\\\ ');
 }
 
 export function detectFlowIssues(source) {
@@ -578,7 +681,7 @@ export function resolveWorkflowSteps(parsedSteps, source, project = {}, options 
   if (validParsed.length >= 2) {
     const grounded = validParsed.filter((step) => stepMatchesProjectCorpus(step, corpus));
     if (grounded.length >= 2 && !validParsed.some((step) => isGenericWorkflowStep(step))) {
-      return compressWorkflowSteps(validParsed);
+      return polishWorkflowSteps(validParsed);
     }
   }
 
@@ -586,20 +689,18 @@ export function resolveWorkflowSteps(parsedSteps, source, project = {}, options 
   if (fromRendered.length >= 2) {
     const grounded = fromRendered.filter((step) => stepMatchesProjectCorpus(step, corpus));
     if (grounded.length >= 2 && !fromRendered.some((step) => isGenericWorkflowStep(step))) {
-      return compressWorkflowSteps(fromRendered);
+      return polishWorkflowSteps(fromRendered);
     }
   }
 
   return inference.steps;
 }
 
-function compressWorkflowSteps(steps) {
+function polishWorkflowSteps(steps) {
   return dedupeSteps(
-    steps.map((step) => {
-      const sanitized = sanitizeDiagramLabel(step);
-      if (sanitized.length <= 26) return sanitized;
-      return shortenLabel(sanitized, 26);
-    })
+    steps
+      .map((step) => condenseToWorkflowLabel(step))
+      .filter((step) => step.length >= 2)
   );
 }
 
@@ -617,7 +718,7 @@ export function parseWorkflowSteps(source) {
   }
 
   const fboxParts = [...text.matchAll(/\\fbox\{(?:\\parbox\{[^}]*\}\{)?([^}]+)\}?\}/g)]
-    .map((match) => shortenLabel(stripLatexMarkup(match[1])))
+    .map((match) => condenseToWorkflowLabel(stripLatexMarkup(match[1])))
     .filter(Boolean);
 
   if (fboxParts.length >= 2) {
@@ -625,7 +726,7 @@ export function parseWorkflowSteps(source) {
   }
 
   const nodeParts = [...text.matchAll(/\\node[^[]*\[([^\]]*)\]\s*\{([^}]+)\}/g)]
-    .map((match) => shortenLabel(stripLatexMarkup(match[2] || match[1])))
+    .map((match) => condenseToWorkflowLabel(stripLatexMarkup(match[2] || match[1])))
     .filter(Boolean);
 
   if (nodeParts.length >= 2) {
@@ -634,7 +735,7 @@ export function parseWorkflowSteps(source) {
 
   const lineParts = text
     .split(/\n+/)
-    .map((line) => shortenLabel(stripLatexMarkup(line)))
+    .map((line) => condenseToWorkflowLabel(stripLatexMarkup(line)))
     .filter((line) => line.length >= 2 && line.length <= MAX_LABEL_CHARS);
 
   if (lineParts.length >= 2 && lineParts.length <= 8) {
@@ -666,7 +767,7 @@ function extractNumberedSteps(text) {
     if (!/^(?:\d+[\).\]]\s+|-\s+|\*\s+|\\item\s+)/.test(line)) continue;
 
     const body = line.replace(/^(?:\d+[\).\]]\s+|-\s+|\*\s+|\\item\s+)/, '').trim();
-    const label = shortenLabel(stripLatexMarkup(body), 34);
+    const label = condenseToWorkflowLabel(stripLatexMarkup(body));
     if (label.length >= 6) steps.push(label);
   }
 
@@ -677,8 +778,8 @@ function extractClauseSteps(text) {
   return dedupeSteps(
     String(text || '')
       .split(/\s*;\s*|\s+then\s+|\s*,\s+and\s+|\s+and\s+(?=[A-Za-z])/i)
-      .map((part) => shortenLabel(stripLatexMarkup(part), 32))
-      .filter((part) => part.length >= 8 && part.length <= 34)
+      .map((part) => condenseToWorkflowLabel(stripLatexMarkup(part)))
+      .filter((part) => part.length >= 8 && part.length <= MAX_LABEL_CHARS)
   );
 }
 
@@ -693,7 +794,7 @@ function milestoneDescriptionToStep(description) {
   const cleaned = clean(description)
     .replace(/^milestone\s+\d+\s*(?:\([^)]+\))?\s*[:\-—–]\s*/i, '')
     .replace(/^phase\s+\d+\s*(?:\([^)]+\))?\s*[:\-—–]\s*/i, '');
-  return shortenLabel(stripLatexMarkup(cleaned), 32);
+  return condenseToWorkflowLabel(stripLatexMarkup(cleaned));
 }
 
 function extractMilestoneWorkflowSteps(project = {}) {
@@ -723,6 +824,9 @@ function deriveWorkflowFromMethodPhrases(project = {}) {
   const candidates = [];
   const phrasePatterns = [
     [/group-relative policy optimization|\bgrpo\b/i, 'GRPO policy optimization'],
+    [/monte carlo tree search|\bmcts\b/i, 'Monte Carlo Tree Search'],
+    [/synthetic step[- ]level (?:data|rewards?)|step[- ]level (?:training )?data/i, 'Synthetic step-level data'],
+    [/process reward model|\bprm\b/i, 'Process reward model'],
     [/dense(?:,\s*)?process rewards?|process-level rewards?/i, 'Dense process rewards'],
     [/curriculum scheduling|difficulty curriculum/i, 'Curriculum scheduling'],
     [/self-consistency|majority vote/i, 'Self-consistency voting'],
@@ -748,8 +852,8 @@ function deriveWorkflowFromMethodPhrases(project = {}) {
     ) || [];
 
   const derived = verbChunks
-    .map((chunk) => shortenLabel(stripLatexMarkup(chunk), 32))
-    .filter((chunk) => chunk.length >= 8 && chunk.length <= 34);
+    .map((chunk) => condenseToWorkflowLabel(stripLatexMarkup(chunk)))
+    .filter((chunk) => chunk.length >= 8 && chunk.length <= MAX_LABEL_CHARS);
 
   return dedupeSteps(derived).slice(0, 6);
 }
@@ -758,8 +862,8 @@ function condenseMethodToWorkflow(project = {}) {
   const method = String(project.method || '');
   const sentences = method
     .split(/(?<=[.!?])\s+/)
-    .map((sentence) => shortenLabel(stripLatexMarkup(sentence), 30))
-    .filter((sentence) => sentence.length >= 8 && sentence.length <= 34);
+    .map((sentence) => condenseToWorkflowLabel(stripLatexMarkup(sentence)))
+    .filter((sentence) => sentence.length >= 8 && sentence.length <= MAX_LABEL_CHARS);
 
   if (sentences.length >= 3) {
     return dedupeSteps(sentences).slice(0, 6);
@@ -775,13 +879,13 @@ function condenseMethodToWorkflow(project = {}) {
 
 function genericWorkflowFromProject(project = {}) {
   const topic = clean(project.title) || clean(project.topic) || 'this research';
-  const shortTopic = shortenLabel(topic, 24);
-  const problemLead = shortenLabel(stripLatexMarkup(firstSentence(project.problem || '')), 30);
-  const methodLead = shortenLabel(stripLatexMarkup(firstSentence(project.method || '')), 30);
+  const shortTopic = fitLabelAtWordBoundary(topic, 36);
+  const problemLead = condenseToWorkflowLabel(firstSentence(project.problem || ''));
+  const methodLead = condenseToWorkflowLabel(firstSentence(project.method || ''));
 
   const steps = [];
   if (problemLead.length >= 8) {
-    steps.push(shortenLabel(`Define ${problemLead}`, 32));
+    steps.push(fitLabelAtWordBoundary(`Define ${problemLead}`, MAX_LABEL_CHARS));
   } else {
     steps.push('Problem Definition');
   }
@@ -789,7 +893,7 @@ function genericWorkflowFromProject(project = {}) {
   if (methodLead.length >= 8) {
     steps.push(methodLead);
   } else {
-    steps.push(shortenLabel(`Data setup for ${shortTopic}`, 30));
+    steps.push(fitLabelAtWordBoundary(`Data setup for ${shortTopic}`, MAX_LABEL_CHARS));
   }
 
   steps.push('Core Method Implementation', 'Evaluation and Ablations', 'Analysis and Write-up');
@@ -804,20 +908,30 @@ function firstSentence(text) {
 
 export function buildDiagramMetadata(project = {}) {
   const title = clean(project.title) || clean(project.topic) || 'Research Workflow';
-  const method = String(project.method || '');
-  const isRl = /reinforcement|grpo|ppo|policy gradient|rl training/i.test(method);
-  const isAgent = /agent|tool use|workflow|orchestrat/i.test(method);
-  const shortTitle = shortenLabel(title, 64);
+  const method = String(project.method || '') + ' ' + title;
+  const isRl = /reinforcement|grpo|ppo|policy gradient|rl training|process[- ]based/i.test(method);
+  const isAgent = /\bagent\b|tool use|orchestrat|\bmcts\b|monte carlo tree search/i.test(method);
+  const isProcessRl = /process[- ]based|process[- ]level|process reward/i.test(method);
+  const captionTitle = fitLabelAtWordBoundary(title, 80);
 
   let diagramTitle = 'Method Workflow Diagram';
-  if (isRl) diagramTitle = 'Training Workflow Diagram';
-  else if (isAgent) diagramTitle = 'Agent Workflow Diagram';
-
-  let caption = `Workflow diagram illustrating the proposed method for ${shortTitle}.`;
-  if (isRl) {
-    caption = `Training workflow for ${shortTitle}: data preparation, reward design, policy optimization, and evaluation.`;
+  if (isRl && isAgent) {
+    diagramTitle = isProcessRl
+      ? 'Process-Based RL Agent Workflow'
+      : 'RL Agent Workflow Diagram';
+  } else if (isRl) {
+    diagramTitle = isProcessRl ? 'Process-Based RL Training Workflow' : 'Training Workflow Diagram';
   } else if (isAgent) {
-    caption = `Agent workflow for ${shortTitle}: inputs, reasoning steps, tool use, and outputs.`;
+    diagramTitle = 'Agent Workflow Diagram';
+  }
+
+  let caption = `Workflow diagram illustrating the proposed method for ${captionTitle}.`;
+  if (isRl && isAgent) {
+    caption = `Process-based RL agent workflow for ${captionTitle}: reasoning-step generation, process reward scoring, MCTS exploration, and GRPO policy updates.`;
+  } else if (isRl) {
+    caption = `Training workflow for ${captionTitle}: data preparation, reward design, policy optimization, and evaluation.`;
+  } else if (isAgent) {
+    caption = `Agent workflow for ${captionTitle}: inputs, reasoning steps, tool use, and outputs.`;
   }
 
   const footnote = isRl
@@ -835,45 +949,45 @@ export function inferWorkflowWithSource(project = {}, options = {}) {
 
   const fromArrows = parseWorkflowSteps(method);
   if (fromArrows.length >= 2) {
-    return { steps: compressWorkflowSteps(fromArrows), source: 'method-arrows' };
+    return { steps: polishWorkflowSteps(fromArrows), source: 'method-arrows' };
   }
 
   const numbered = extractNumberedSteps(method);
   if (numbered.length >= 2) {
-    return { steps: compressWorkflowSteps(numbered), source: 'method-numbered' };
+    return { steps: polishWorkflowSteps(numbered), source: 'method-numbered' };
   }
 
   const fromLatexItems = extractNumberedSteps(extractMethodSectionBody(latex));
   if (fromLatexItems.length >= 2) {
-    return { steps: compressWorkflowSteps(fromLatexItems), source: 'latex-method-items' };
-  }
-
-  const fromMilestones = extractMilestoneWorkflowSteps(project);
-  if (fromMilestones.length >= 3) {
-    return { steps: compressWorkflowSteps(fromMilestones), source: 'timeline-milestones' };
-  }
-
-  const clauses = extractClauseSteps(method);
-  if (clauses.length >= 2) {
-    return { steps: compressWorkflowSteps(clauses), source: 'method-clauses' };
-  }
-
-  const condensed = condenseMethodToWorkflow(project);
-  if (condensed.length >= 2) {
-    return { steps: compressWorkflowSteps(condensed), source: 'method-condensed' };
+    return { steps: polishWorkflowSteps(fromLatexItems), source: 'latex-method-items' };
   }
 
   const derived = deriveWorkflowFromMethodPhrases(project);
   if (derived.length >= 2) {
-    return { steps: compressWorkflowSteps(derived), source: 'method-phrases' };
+    return { steps: polishWorkflowSteps(derived), source: 'method-phrases' };
+  }
+
+  const fromMilestones = extractMilestoneWorkflowSteps(project);
+  if (fromMilestones.length >= 3) {
+    return { steps: polishWorkflowSteps(fromMilestones), source: 'timeline-milestones' };
+  }
+
+  const clauses = extractClauseSteps(method);
+  if (clauses.length >= 2) {
+    return { steps: polishWorkflowSteps(clauses), source: 'method-clauses' };
+  }
+
+  const condensed = condenseMethodToWorkflow(project);
+  if (condensed.length >= 2) {
+    return { steps: polishWorkflowSteps(condensed), source: 'method-condensed' };
   }
 
   if (fromMilestones.length >= 2) {
-    return { steps: compressWorkflowSteps(fromMilestones), source: 'timeline-milestones' };
+    return { steps: polishWorkflowSteps(fromMilestones), source: 'timeline-milestones' };
   }
 
   return {
-    steps: compressWorkflowSteps(genericWorkflowFromProject(project)),
+    steps: polishWorkflowSteps(genericWorkflowFromProject(project)),
     source: 'generic-fallback'
   };
 }
@@ -1000,8 +1114,9 @@ export function validateDiagram(steps, options = {}) {
 }
 
 function buildNodeBox(label, widthFraction) {
-  const safeLabel = sanitizeDiagramLabel(label);
-  return `\\fbox{\\parbox{${widthFraction}\\linewidth}{\\centering ${formatEntryForLatex(safeLabel)}}}`;
+  const safeLabel = condenseToWorkflowLabel(label);
+  const wrapped = wrapLabelForParbox(safeLabel);
+  return `\\fbox{\\parbox{${widthFraction}\\linewidth}{\\centering\\small ${wrapped}}}`;
 }
 
 function buildRow(steps, boxWidth) {
@@ -1056,16 +1171,19 @@ function buildHorizontalDiagram(steps) {
 }
 
 function buildVerticalDiagram(steps) {
-  const parts = steps.map((step) => buildNodeBox(step, 0.78));
+  const parts = steps.map((step) => buildNodeBox(step, 0.88));
   return parts.join('\n\n\\vspace{0.35em}\n{\\centering $\\downarrow$ \\par}\n\\vspace{0.25em}\n\n');
 }
 
 export function buildWorkflowDiagramLatex(steps, options = {}) {
   const labels = (Array.isArray(steps) ? steps : [])
-    .map((step) => sanitizeDiagramLabel(step))
+    .map((step) => condenseToWorkflowLabel(step))
     .filter(Boolean);
   const layout = 'vertical';
-  const title = sanitizeDiagramLabel(options.title || 'Agent Workflow Diagram', 80);
+  const title = fitLabelAtWordBoundary(
+    sanitizeDiagramLabel(options.title || 'Agent Workflow Diagram', TITLE_MAX_CHARS),
+    TITLE_MAX_CHARS
+  );
   const footnote = sanitizeDiagramLabel(options.footnote || '', 100);
 
   let body = '';
@@ -1094,7 +1212,10 @@ export function buildWorkflowDiagramLatex(steps, options = {}) {
 export function buildFigureEnvironment(steps, caption, placement = '[h]', options = {}) {
   const diagram = buildWorkflowDiagramLatex(steps, options);
   const captionText =
-    sanitizeDiagramLabel(caption, 180) || 'Workflow diagram illustrating the proposed method.';
+    fitLabelAtWordBoundary(
+      sanitizeDiagramLabel(caption, CAPTION_MAX_CHARS),
+      CAPTION_MAX_CHARS
+    ) || 'Workflow diagram illustrating the proposed method.';
 
   return `\\begin{figure}${placement}
 \\centering

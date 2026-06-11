@@ -115,6 +115,36 @@ export function repairOrphanDocumentFragments(latex) {
   return next;
 }
 
+export function repairDuplicateBibliography(latex) {
+  const pattern = /\\begin\{thebibliography\}[\s\S]*?\\end\{thebibliography\}/gi;
+  const matches = [...String(latex || '').matchAll(pattern)];
+  if (matches.length <= 1) return String(latex || '');
+
+  let next = String(latex || '');
+  for (let index = 0; index < matches.length - 1; index += 1) {
+    next = next.replace(matches[index][0], '');
+  }
+
+  return next.replace(/\n{3,}/g, '\n\n');
+}
+
+export function repairStrayPreambleCommands(latex) {
+  const lines = String(latex || '').replace(/\r\n/g, '\n').split('\n');
+  const beginIndex = lines.findIndex((line) => /\\begin\{document\}/.test(line));
+  if (beginIndex < 0) return String(latex || '');
+
+  const kept = [...lines.slice(0, beginIndex + 1)];
+  for (let index = beginIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (/^\\usepackage\b|^\\RequirePackage\b|^\\documentclass\b/.test(line.trim())) {
+      continue;
+    }
+    kept.push(line);
+  }
+
+  return kept.join('\n');
+}
+
 export function repairDuplicateDocumentMarkers(latex) {
   const lines = String(latex || '').replace(/\r\n/g, '\n').split('\n');
   const seen = new Set();
@@ -195,6 +225,16 @@ export function auditLatexStructure(latex) {
     issues.push('In-text citations found without natbib package.');
   }
 
+  const bibliographyCount = (source.match(/\\begin\{thebibliography\}/g) || []).length;
+  if (bibliographyCount > 1) {
+    issues.push(`Found ${bibliographyCount} bibliography blocks; only one is allowed.`);
+  }
+
+  const documentClassCount = (source.match(/\\documentclass\b/g) || []).length;
+  if (documentClassCount > 1) {
+    issues.push(`Found ${documentClassCount} \\documentclass declarations.`);
+  }
+
   return {
     ok: issues.length === 0,
     issues
@@ -205,6 +245,8 @@ export function repairStructuralLatex(latex, options = {}) {
   const author = options.author || PROPOSAL_AUTHOR;
   let next = normalizeUnicodeForLatex(latex);
   next = repairDuplicateDocumentMarkers(next);
+  next = repairStrayPreambleCommands(next);
+  next = repairDuplicateBibliography(next);
   next = repairOrphanDocumentFragments(next);
   next = repairEmptyListEnvironments(next);
   next = repairUnbalancedEnvironments(next);

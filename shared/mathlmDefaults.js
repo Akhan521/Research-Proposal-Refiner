@@ -1,4 +1,5 @@
 export const PROPOSAL_AUTHOR = 'Aamir Khan';
+export const MAX_PROPOSAL_REFERENCES = 5;
 
 export const DEFAULT_REQUIREMENTS = `Proposal must include:
 - Project title

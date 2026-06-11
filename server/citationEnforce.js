@@ -1,6 +1,8 @@
+import { MAX_PROPOSAL_REFERENCES } from '../shared/mathlmDefaults.js';
 import {
   findMatchingPaper,
   formatCanonicalCitation,
+  limitReferenceEntries,
   parseReferenceEntries,
   validateReferenceLine
 } from './citationValidate.js';
@@ -112,11 +114,12 @@ function buildCitationEntry(citationLine, paper, usedKeys) {
   };
 }
 
-export function buildCitationRegistry(referencesText, knownPapers = []) {
+export function buildCitationRegistry(referencesText, knownPapers = [], maxEntries = MAX_PROPOSAL_REFERENCES) {
   const usedKeys = new Set();
   const entries = [];
+  const limited = limitReferenceEntries(parseReferenceEntries(referencesText), maxEntries);
 
-  for (const line of parseReferenceEntries(referencesText)) {
+  for (const line of limited.entries) {
     const match = findMatchingPaper(line, knownPapers);
     const validated = validateReferenceLine(line, match);
     if (!validated.valid || !validated.citation) continue;
@@ -124,7 +127,25 @@ export function buildCitationRegistry(referencesText, knownPapers = []) {
     entries.push(buildCitationEntry(validated.citation, match, usedKeys));
   }
 
-  return { entries };
+  return { entries, truncated: limited.truncated };
+}
+
+export function stripUnknownCiteKeys(latex, registry) {
+  const keys = new Set((registry?.entries || []).map((entry) => entry.key));
+  if (!keys.size) {
+    return String(latex || '').replace(/\\cite[tp]?\{[^}]+\}/g, '');
+  }
+
+  return String(latex || '').replace(/\\cite[tp]?\{([^}]+)\}/g, (match, keyList) => {
+    const valid = keyList
+      .split(',')
+      .map((key) => key.trim())
+      .filter((key) => keys.has(key));
+
+    if (!valid.length) return '';
+    if (valid.length === keyList.split(',').length) return match;
+    return `\\citep{${valid.join(', ')}}`;
+  });
 }
 
 export function buildBibliographyLatexSection(registry) {
@@ -451,15 +472,17 @@ export function enforceCitationsInProposalLatex(latex, project = {}, registry, k
 
 export function finalizeCitationValidation(latex, registry) {
   if (!registry?.entries?.length) {
+    const stripped = stripUnknownCiteKeys(latex, registry);
     return {
-      latex,
-      validation: { ok: true, issues: [], warnings: [], inTextCount: countInTextCitations(latex) },
-      inTextCount: countInTextCitations(latex)
+      latex: stripped,
+      validation: { ok: true, issues: [], warnings: [], inTextCount: countInTextCitations(stripped) },
+      inTextCount: countInTextCitations(stripped)
     };
   }
 
   let next = enhanceAbstractCitations(latex, registry);
   next = replacePlainCitationsWithCitep(next, registry);
+  next = stripUnknownCiteKeys(next, registry);
   const validation = validateInTextCitations(next, registry);
 
   return {

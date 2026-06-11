@@ -78,7 +78,7 @@ const trainingFigure = buildFigureEnvironment(
 assert.ok(trainingFigure.includes('Math prompt') || trainingFigure.includes('multi-sample'), 'training steps rendered');
 assert.doesNotMatch(trainingFigure, /@\{\}c@\{[^}]*\\rightarrow/);
 assert.match(trainingFigure, /Math prompt/);
-assert.match(trainingFigure, /majority-vote answer/);
+assert.match(trainingFigure, /majority-vote answer/i);
 
 const trainingEnforced = enforceFiguresInProposalLatex(
   `\\documentclass{article}\\begin{document}${trainingFigure}\\end{document}`,
@@ -116,7 +116,7 @@ const bounded = buildWorkflowDiagramLatex(steps, {
   footnote: '(Iterative loop until convergence)'
 });
 
-assert.match(bounded, /parbox\{0\.78\\linewidth\}/);
+assert.match(bounded, /parbox\{0\.88\\linewidth\}/);
 assert.match(bounded, /\\downarrow/);
 assert.doesNotMatch(bounded, /@\{\}c@\{[^}]*\\rightarrow/);
 
@@ -175,7 +175,47 @@ assert.match(injected.latex, /\\begin\{figure\}/);
 assert.equal(injected.validations[0].renderedContent.ok, true, injected.validations[0].renderedContent.issues.join('; '));
 
 const projectFigure = buildProjectWorkflowFigure(DEFAULT_PROJECT);
-assert.match(projectFigure.replacement, /Training Workflow Diagram/);
+assert.match(projectFigure.replacement, /Process-Based RL Training Workflow|Training Workflow Diagram/);
+assert.doesNotMatch(projectFigure.replacement, /\.\.\./);
 assert.equal(projectFigure.validation.renderedContent.ok, true);
+
+const processRlProject = {
+  title: 'Process-Based RL for Mathematical Reasoning',
+  method:
+    'We will use GRPO (Group Relative Policy Optimization) for policy updates. Monte Carlo Tree Search will explore reasoning paths. A process reward model scores intermediate steps using synthetic step-level data.'
+};
+
+const processRlInference = inferWorkflowWithSource(processRlProject);
+assert.ok(
+  processRlInference.steps.length >= 3,
+  `expected grounded steps, got: ${processRlInference.steps.join(' | ')}`
+);
+assert.ok(
+  !processRlInference.steps.some((step) => step.endsWith('...')),
+  'workflow steps should not be truncated with ellipsis'
+);
+assert.ok(
+  processRlInference.steps.some((step) => /grpo/i.test(step)),
+  'diagram should include GRPO step'
+);
+assert.ok(
+  processRlInference.steps.some((step) => /monte carlo tree search/i.test(step)),
+  'diagram should include MCTS step'
+);
+assert.ok(
+  processRlInference.steps.some((step) => /step-level data/i.test(step)),
+  'diagram should include step-level data step'
+);
+
+const processRlFigure = buildProjectWorkflowFigure(processRlProject);
+assert.doesNotMatch(processRlFigure.replacement, /\.\.\./);
+assert.match(processRlFigure.replacement, /GRPO/i);
+assert.match(processRlFigure.replacement, /Monte Carlo Tree Search/i);
+assert.match(
+  processRlFigure.replacement,
+  /process reward model|Process-Based RL/i,
+  'caption or title should describe the process-based RL workflow'
+);
+assert.equal(processRlFigure.validation.renderedContent.ok, true);
 
 console.log('PASS NSF-style workflow diagram generation and validation');

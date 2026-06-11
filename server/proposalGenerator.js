@@ -7,6 +7,7 @@ import {
 } from '../shared/mathlmDefaults.js';
 import {
   appendReferenceValidationNote,
+  limitReferencesForProposal,
   normalizeReferencesField
 } from './citationValidate.js';
 import {
@@ -84,7 +85,7 @@ Rules:
 - Mark unsupported claims as assumptions.
 - Include a concrete agent workflow when the method involves an agent.
 - Include at least one LaTeX-native figure, diagram, workflow chart, or architecture sketch with a caption.
-- Use only citation strings from project.references in the References section. Do not invent, rename, or add citations that are not listed in project.references.
+- Use only citation strings from project.references in the References section (at most five sources). Do not invent, rename, or add citations that are not listed in project.references.
 - Include in-text citations with natbib: add \\usepackage[round,authoryear]{natbib} and cite sources using \\citep{key} in Motivation, Method, and Evaluation sections. Use only keys from citationKeys in the payload. The bibliography is rebuilt at export from verified Sources.
 - The Resources section is rebuilt from project.resources at export time. Keep that field organized by category (computing, software, data, budget/support) with concrete, feasibility-oriented items. Do not invent resources that are not listed in project.resources.
 - The abstract is rebuilt at export time from project fields. Write NSF-style prose: clear problem/gap, specific objective, credible approach, evaluation criteria, and expected outcomes (roughly 150--250 words). When citing prior work in the abstract, use \\citep{key} with keys from citationKeys only.
@@ -369,13 +370,14 @@ export async function refineAgentStructure(payload) {
 export async function generateProposal(payload) {
   const project = normalizePayload(payload.project || payload);
   const knownPapers = Array.isArray(payload.literaturePapers) ? payload.literaturePapers : [];
-  const normalizedReferences = normalizeReferencesField(project.references, knownPapers);
+  const limitedReferences = limitReferencesForProposal(project.references, knownPapers);
+  const limitedKnownPapers = limitedReferences.knownPapers;
   const normalizedResources = normalizeResourcesField(project.resources);
   const normalizedTimeline = normalizeTimelineField(project.timeline, project);
   const normalizedEvaluation = normalizeEvaluationField(project.evaluation, project);
   const normalizedProject = {
     ...project,
-    references: normalizedReferences.references || project.references,
+    references: limitedReferences.references || project.references,
     resources: normalizedResources.resources || project.resources,
     timeline: normalizedTimeline.timeline || project.timeline,
     evaluation: normalizedEvaluation.evaluation || project.evaluation
@@ -386,7 +388,10 @@ export async function generateProposal(payload) {
     ...preparedProject.validation,
     scrubbed: preparedProject.scrubbed
   };
-  const citationRegistry = buildCitationRegistry(projectForDraft.references || '', knownPapers);
+  const citationRegistry = buildCitationRegistry(
+    projectForDraft.references || '',
+    limitedKnownPapers
+  );
   const requirements = projectForDraft.requirements || DEFAULT_REQUIREMENTS;
   const checklist = extractChecklist(requirements);
 
@@ -396,8 +401,8 @@ export async function generateProposal(payload) {
       : generateLocally(projectForDraft, checklist);
 
   return finalizeProposalOutput(result, projectForDraft, checklist, {
-    referenceReport: normalizedReferences.report,
-    knownPapers,
+    referenceReport: limitedReferences.report,
+    knownPapers: limitedKnownPapers,
     milestoneValidation: normalizedTimeline.validation,
     citationRegistry,
     redundancyPrecheck
@@ -532,7 +537,7 @@ async function generateWithApi(project, checklist, llmModel) {
   const promptPayload = {
     project,
     checklist,
-    citationKeys: buildCitationRegistry(project.references || '', []).entries.map((entry) => ({
+    citationKeys: buildCitationRegistry(project.references || '', []).entries.slice(0, 5).map((entry) => ({
       key: entry.key,
       inText: entry.inTextParenthetical,
       title: entry.title
@@ -654,8 +659,15 @@ async function callOpenAiCompatible({ systemPrompt, payload, model, temperature 
 }
 
 function buildEnforcedProposalLatex(baseLatex, project, options = {}) {
+  const title = project.title || project.topic || 'proposal';
+  const cleanedBase = repairUnescapedSpecialChars(
+    repairStructuralLatex(String(baseLatex || ''), {
+      title,
+      author: PROPOSAL_AUTHOR
+    })
+  );
   const resourceEnforcement = enforceResourcesInProposalLatex(
-    baseLatex,
+    cleanedBase,
     project.resources || ''
   );
   const referenceEnforcement = enforceCitationsInProposalLatex(

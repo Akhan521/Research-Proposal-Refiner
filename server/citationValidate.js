@@ -1,3 +1,5 @@
+import { MAX_PROPOSAL_REFERENCES } from '../shared/mathlmDefaults.js';
+
 function clean(value) {
   return String(value ?? '').trim();
 }
@@ -133,6 +135,62 @@ export function validateReferenceLine(referenceLine, knownPaper = null) {
   };
 }
 
+export function limitReferenceEntries(entries, max = MAX_PROPOSAL_REFERENCES) {
+  const list = (Array.isArray(entries) ? entries : []).map((entry) => clean(entry)).filter(Boolean);
+  if (list.length <= max) {
+    return { entries: list, truncated: 0 };
+  }
+
+  return {
+    entries: list.slice(0, max),
+    truncated: list.length - max
+  };
+}
+
+export function limitKnownPapersForReferences(referenceEntries, knownPapers = []) {
+  const papers = [];
+  const seen = new Set();
+
+  for (const entry of referenceEntries) {
+    const match = findMatchingPaper(entry, knownPapers);
+    if (!match) continue;
+
+    const id = clean(match.id) || normalizeTitleKey(match.title);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    papers.push(match);
+  }
+
+  return papers;
+}
+
+export function limitReferencesForProposal(
+  referencesText,
+  knownPapers = [],
+  max = MAX_PROPOSAL_REFERENCES
+) {
+  const normalized = normalizeReferencesField(referencesText, knownPapers);
+  const entries = parseReferenceEntries(normalized.references);
+  const limited = limitReferenceEntries(entries, max);
+  const report = {
+    ...normalized.report,
+    limitedTo: max,
+    truncated: limited.truncated
+  };
+
+  if (limited.truncated > 0) {
+    report.warnings.push(
+      `Limited Sources to the top ${max} references for proposal quality (${limited.truncated} additional reference(s) omitted from the export).`
+    );
+  }
+
+  return {
+    references: limited.entries.join('\n'),
+    knownPapers: limitKnownPapersForReferences(limited.entries, knownPapers),
+    report
+  };
+}
+
 export function normalizeReferencesField(referencesText, knownPapers = []) {
   const entries = parseReferenceEntries(referencesText);
   const normalized = [];
@@ -191,6 +249,12 @@ export function appendReferenceValidationNote(report, validationReport, enforcem
     if (validationReport.warnings.length) {
       notes.push(...validationReport.warnings.slice(0, 4).map((warning) => `- ${warning}`));
     }
+  }
+
+  if (validationReport?.truncated > 0) {
+    notes.push(
+      `- Sources were capped at ${validationReport.limitedTo || MAX_PROPOSAL_REFERENCES} references to keep the proposal focused (${validationReport.truncated} omitted).`
+    );
   }
 
   if (enforcement?.replaced) {
