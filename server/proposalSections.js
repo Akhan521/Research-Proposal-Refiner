@@ -5,11 +5,50 @@ import {
   scrubStandaloneCitationLeads
 } from './citationEnforce.js';
 import { dedupeSentencesAcrossBlocks, splitSentences as redundancySplitSentences } from './proposalRedundancy.js';
+import {
+  mergeFragmentItems,
+  splitSentences,
+  truncateToSentences,
+  validateCompleteProseItems
+} from './textSegmentation.js';
 
 const ITEMIZE_OPTIONS =
   '[leftmargin=*,itemsep=0.35em,parsep=0pt,topsep=0.35em,partopsep=0pt]';
 const ENUMERATE_OPTIONS =
   '[leftmargin=*,itemsep=0.35em,parsep=0pt,topsep=0.35em,partopsep=0pt]';
+
+const EVALUATION_SECTIONS = [
+  {
+    key: 'research_questions',
+    label: 'Research Questions and Hypotheses',
+    aliases: ['research question', 'research questions', 'hypothesis', 'hypotheses', 'primary question']
+  },
+  {
+    key: 'metrics',
+    label: 'Metrics and Benchmarks',
+    aliases: ['metrics', 'metric', 'benchmarks', 'benchmark', 'measures']
+  },
+  {
+    key: 'baselines',
+    label: 'Comparative Baselines',
+    aliases: ['baselines', 'baseline', 'comparisons', 'comparison']
+  },
+  {
+    key: 'ablations',
+    label: 'Ablations and Sensitivity Analysis',
+    aliases: ['ablations', 'ablation', 'sensitivity']
+  },
+  {
+    key: 'analysis',
+    label: 'Analysis Plan',
+    aliases: ['analysis plan', 'analysis', 'protocol', 'procedure']
+  },
+  {
+    key: 'success',
+    label: 'Success Criteria',
+    aliases: ['success criteria', 'success', 'acceptance criteria']
+  }
+];
 
 function clean(value) {
   return String(value ?? '').trim();
@@ -36,26 +75,8 @@ function splitLines(text) {
     .filter(Boolean);
 }
 
-function truncateToSentences(text, maxSentences = 2) {
-  const value = clean(text);
-  if (!value) return '';
-
-  const sentences = value.match(/[^.!?]+[.!?]+/g) || [value];
-  return sentences
-    .slice(0, maxSentences)
-    .map((sentence) => sentence.trim())
-    .join(' ')
-    .trim();
-}
-
 function wordCount(text) {
   return clean(text).split(/\s+/).filter(Boolean).length;
-}
-
-function splitSentences(text) {
-  const value = clean(text);
-  if (!value) return [];
-  return value.match(/[^.!?]+[.!?]+/g)?.map((sentence) => sentence.trim()) || [value];
 }
 
 function firstSentence(text) {
@@ -130,11 +151,49 @@ function buildEvaluationAbstractPhrase(evaluation, project = {}) {
   return truncateToSentences(stripProblemBoilerplate(text, project.problem), 1).replace(/\.$/, '').trim();
 }
 
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function stripLeadingLabel(line) {
-  return clean(line).replace(
-    /^(?:expected results?|research questions?|metrics?|baselines?|ablations?|success criteria|analysis plan|primary (?:research )?question|hypothes(?:is|es))\s*:\s*/i,
+  let result = clean(line);
+
+  for (const section of EVALUATION_SECTIONS) {
+    const labels = [section.label, ...section.aliases];
+    for (const label of labels) {
+      const pattern = new RegExp(`^${escapeRegExp(label)}\\s*:\\s*`, 'i');
+      if (pattern.test(result)) {
+        result = result.replace(pattern, '').trim();
+      }
+    }
+  }
+
+  return result.replace(
+    /^(?:expected results?|primary (?:research )?question)\s*:\s*/i,
     ''
   );
+}
+
+function sectionKeyForLabeledBlock(blockKey) {
+  for (const section of EVALUATION_SECTIONS) {
+    if (normalizeKey(section.label) === blockKey) {
+      return section.key;
+    }
+
+    for (const alias of section.aliases) {
+      const aliasKey = normalizeKey(alias);
+      if (
+        blockKey === aliasKey ||
+        blockKey.startsWith(`${aliasKey}_`) ||
+        blockKey.endsWith(`_${aliasKey}`) ||
+        blockKey.includes(`_${aliasKey}_`)
+      ) {
+        return section.key;
+      }
+    }
+  }
+
+  return null;
 }
 
 function detectLabeledBlock(lines) {
@@ -772,62 +831,31 @@ export function buildMilestonesLatexSection(timelineText, project = {}) {
   return `\n${sections.join('\n\n')}\n`;
 }
 
-const EVALUATION_SECTIONS = [
-  {
-    key: 'research_questions',
-    label: 'Research Questions and Hypotheses',
-    aliases: ['research question', 'research questions', 'hypothesis', 'hypotheses', 'primary question']
-  },
-  {
-    key: 'metrics',
-    label: 'Metrics and Benchmarks',
-    aliases: ['metrics', 'metric', 'benchmarks', 'benchmark', 'measures']
-  },
-  {
-    key: 'baselines',
-    label: 'Comparative Baselines',
-    aliases: ['baselines', 'baseline', 'comparisons', 'comparison']
-  },
-  {
-    key: 'ablations',
-    label: 'Ablations and Sensitivity Analysis',
-    aliases: ['ablations', 'ablation', 'sensitivity']
-  },
-  {
-    key: 'analysis',
-    label: 'Analysis Plan',
-    aliases: ['analysis plan', 'analysis', 'protocol', 'procedure']
-  },
-  {
-    key: 'success',
-    label: 'Success Criteria',
-    aliases: ['success criteria', 'success', 'acceptance criteria']
-  }
-];
-
 function categorizeEvaluationContent(evaluationText, project = {}) {
   const lines = splitLines(evaluationText);
   const blocks = detectLabeledBlock(lines);
   const sections = new Map(EVALUATION_SECTIONS.map((section) => [section.key, []]));
 
-  for (const section of EVALUATION_SECTIONS) {
-    for (const alias of section.aliases) {
-      const key = normalizeKey(alias);
-      if (blocks.has(key)) {
-        sections.get(section.key).push(...blocks.get(key));
-      }
+  for (const [blockKey, blockItems] of blocks.entries()) {
+    const sectionKey = sectionKeyForLabeledBlock(blockKey);
+    if (sectionKey) {
+      sections.get(sectionKey).push(...blockItems);
     }
   }
 
   const unassigned = [];
   for (const line of lines) {
-    if (/^[^:]{3,40}:\s*.+/.test(line)) continue;
+    const labelMatch = line.match(/^([^:]{3,60}):\s*(.+)$/);
+    if (labelMatch && sectionKeyForLabeledBlock(normalizeKey(labelMatch[1]))) {
+      continue;
+    }
+    if (/^[^:]{3,60}:\s*.+/.test(line)) continue;
     unassigned.push(line);
   }
 
   if (![...sections.values()].some((items) => items.length)) {
     const candidates = (unassigned.length ? unassigned : splitLines(evaluationText)).flatMap((line) =>
-      splitSentences(line)
+      splitSentences(stripLeadingLabel(line))
     );
 
     for (const sentence of candidates) {
@@ -890,13 +918,37 @@ function categorizeEvaluationContent(evaluationText, project = {}) {
       );
   }
 
+  for (const section of EVALUATION_SECTIONS) {
+    const merged = mergeFragmentItems(
+      (sections.get(section.key) || []).map((entry) => stripLeadingLabel(entry))
+    );
+    sections.set(section.key, merged);
+  }
+
   return sections;
 }
 
+export function validateEvaluationContentCompleteness(evaluationText, project = {}) {
+  const sections = categorizeEvaluationContent(evaluationText, project);
+  const issues = [];
+
+  for (const section of EVALUATION_SECTIONS) {
+    const items = sections.get(section.key) || [];
+    if (!items.length) continue;
+
+    const validation = validateCompleteProseItems(items, section.label);
+    issues.push(...validation.issues);
+  }
+
+  return { ok: issues.length === 0, issues, sections };
+}
+
 function formatEvaluationItems(items) {
-  const entries = (Array.isArray(items) ? items : [])
-    .map((entry) => ensureSentence(stripLeadingLabel(entry)))
-    .filter(Boolean);
+  const entries = mergeFragmentItems(
+    (Array.isArray(items) ? items : [])
+      .map((entry) => ensureSentence(stripLeadingLabel(entry)))
+      .filter(Boolean)
+  );
 
   if (!entries.length) return '';
   if (entries.length === 1) {

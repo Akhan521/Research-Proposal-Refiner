@@ -10,8 +10,10 @@ import {
   enforceMilestonesInProposalLatex,
   normalizeEvaluationField,
   normalizeTimelineField,
+  validateEvaluationContentCompleteness,
   validateMilestonePlan
 } from '../server/proposalSections.js';
+import { splitSentences } from '../server/textSegmentation.js';
 import { ensureLayoutPreamble } from '../server/latexLayout.js';
 import { compileLatexDocument } from '../server/pdfExport.js';
 
@@ -48,6 +50,19 @@ assert.match(evaluationLatex, /Research Questions and Hypotheses/);
 assert.match(evaluationLatex, /Metrics and Benchmarks/);
 assert.match(evaluationLatex, /Comparative Baselines/);
 assert.match(evaluationLatex, /Success Criteria/);
+
+const egEvaluation =
+  'Metrics and Benchmarks: Include evaluation on competition-level problems (e.g., AMC, AIME) to assess generalization beyond standard benchmarks like GSM8K and MATH.';
+const egSentences = splitSentences(egEvaluation);
+assert.equal(egSentences.length, 1, `e.g. must not split sentences: ${JSON.stringify(egSentences)}`);
+
+const egLatex = buildEvaluationLatexSection(egEvaluation, project);
+assert.match(egLatex, /\(e\.g\., AMC, AIME\)/);
+assert.doesNotMatch(egLatex, /\\item[^\\]*\(e\./);
+assert.doesNotMatch(egLatex, /\\item g\./);
+
+const egCompleteness = validateEvaluationContentCompleteness(egEvaluation, project);
+assert.equal(egCompleteness.ok, true, egCompleteness.issues.join('; '));
 
 let document = `\\PassOptionsToPackage{hyphens}{url}
 \\documentclass[11pt]{article}

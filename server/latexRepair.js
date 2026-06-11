@@ -84,6 +84,13 @@ export function repairUnbalancedEnvironments(latex) {
   return next;
 }
 
+export function repairEscapedStarSectionHeadings(latex) {
+  return String(latex || '').replace(
+    /\\(section|subsection|subsubsection|paragraph|chapter|part)\*\\{([^{}]+)\\}/gi,
+    '\\$1*{$2}'
+  );
+}
+
 export function repairOrphanDocumentFragments(latex) {
   let next = String(latex || '');
 
@@ -244,6 +251,7 @@ export function auditLatexStructure(latex) {
 export function repairStructuralLatex(latex, options = {}) {
   const author = options.author || PROPOSAL_AUTHOR;
   let next = normalizeUnicodeForLatex(latex);
+  next = repairEscapedStarSectionHeadings(next);
   next = repairDuplicateDocumentMarkers(next);
   next = repairStrayPreambleCommands(next);
   next = repairDuplicateBibliography(next);

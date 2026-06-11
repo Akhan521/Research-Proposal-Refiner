@@ -14,6 +14,7 @@ import {
 import { generateProposal } from '../server/proposalGenerator.js';
 import { ensureLayoutPreamble } from '../server/latexLayout.js';
 import { compileLatexDocument } from '../server/pdfExport.js';
+import { repairUnescapedSpecialChars } from '../server/latexValidate.js';
 import { dedupeSentencesAcrossBlocks, splitSentences } from '../server/proposalRedundancy.js';
 
 const problemSentence =
@@ -75,6 +76,12 @@ This proposal builds on prior work, including (Lightman et al., 2023).
 Body text.
 \end{document}`;
 
+const repairedAbstractHeading = repairUnescapedSpecialChars(
+  '\\begin{document}\\maketitle\\n\\section*{Abstract}\\nBody text.\\end{document}'
+);
+assert.match(repairedAbstractHeading, /\\section\*\{Abstract\}/);
+assert.doesNotMatch(repairedAbstractHeading, /\\section\*\\\{Abstract\\\}/);
+
 const enforced = enforceAbstractInProposalLatex(latex, project, registry);
 assert.equal(enforced.replaced, true);
 assert.match(enforced.latex, /\\section\*\{Abstract\}/);
@@ -121,6 +128,7 @@ assert.equal(compiled.ok, true, compiled.error || 'abstract section formatting s
 
 const proposal = await generateProposal({ project, literaturePapers: [] });
 assert.match(proposal.proposalLatex, /\\section\*\{Abstract\}/);
+assert.doesNotMatch(proposal.proposalLatex, /\\section\*\\\{Abstract\\\}/);
 assert.doesNotMatch(proposal.proposalLatex, /\\begin\{abstract\}/);
 assert.doesNotMatch(proposal.proposalLatex, /This proposal builds on prior work, including/i);
 

@@ -15,13 +15,9 @@ function normalizeSentence(sentence) {
     .trim();
 }
 
-export function splitSentences(text) {
-  const value = clean(text);
-  if (!value) return [];
+import { mergeFragmentItems, splitSentences, truncateToSentences } from './textSegmentation.js';
 
-  const parts = value.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [];
-  return parts.map((part) => clean(part)).filter(Boolean);
-}
+export { mergeFragmentItems, splitSentences, truncateToSentences };
 
 export function dedupeSentencesAcrossBlocks(blocks) {
   const seen = new Set();

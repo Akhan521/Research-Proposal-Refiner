@@ -77,9 +77,15 @@ function readLatexControlSequence(source, startIndex) {
   let index = startIndex + 1;
   let text = '\\';
 
-  if (index < source.length && /[*@]/.test(source[index])) {
+  if (index < source.length && source[index] === '@') {
     text += source[index];
     index += 1;
+  }
+
+  if (index < source.length && !/[a-zA-Z]/.test(source[index]) && source[index] !== '{') {
+    text += source[index];
+    index += 1;
+    return { text, end: index };
   }
 
   while (index < source.length && /[a-zA-Z]/.test(source[index])) {
@@ -87,7 +93,7 @@ function readLatexControlSequence(source, startIndex) {
     index += 1;
   }
 
-  const commandName = text.slice(1).replace(/^[*@]/, '');
+  const commandName = text.slice(1).replace(/^@/, '');
 
   if (commandName === 'begin' || commandName === 'end') {
     while (index < source.length && /\s/.test(source[index])) {
@@ -114,6 +120,15 @@ function readLatexControlSequence(source, startIndex) {
   while (index < source.length && /\s/.test(source[index])) {
     text += source[index];
     index += 1;
+  }
+
+  if (index < source.length && source[index] === '*') {
+    text += source[index];
+    index += 1;
+    while (index < source.length && /\s/.test(source[index])) {
+      text += source[index];
+      index += 1;
+    }
   }
 
   while (index < source.length && (source[index] === '[' || source[index] === '{')) {
