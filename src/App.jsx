@@ -39,6 +39,10 @@ const PROJECT_FIELDS = [
   ['references', 'Sources']
 ];
 
+const AI_REFINABLE_PROJECT_FIELDS = new Set(
+  PROJECT_FIELDS.filter(([field]) => field !== 'references').map(([field]) => field)
+);
+
 const STAGES = [
   ['1', 'Extract', 'LLM turns the rough idea into structured proposal data'],
   ['2', 'Decide', 'You choose or edit candidate framings'],
@@ -169,6 +173,12 @@ function App() {
   const [literatureSource, setLiteratureSource] = useState('auto');
   const [literatureStatus, setLiteratureStatus] = useState('idle');
   const [literatureNotice, setLiteratureNotice] = useState('');
+  const [selectedLiteraturePaperIds, setSelectedLiteraturePaperIds] = useState([]);
+  const [activeLiteratureSummary, setActiveLiteratureSummary] = useState({
+    relatedWorkParagraph: '',
+    gapNote: ''
+  });
+  const [literatureSummaryStatus, setLiteratureSummaryStatus] = useState('idle');
   const [lastInsertedLiteratureSummary, setLastInsertedLiteratureSummary] = useState('');
   const [llmModel, setLlmModel] = useState('');
   const [llmConfig, setLlmConfig] = useState(null);
@@ -177,6 +187,7 @@ function App() {
   const [suggestionReviseOpen, setSuggestionReviseOpen] = useState(false);
   const [decisionReviseOpen, setDecisionReviseOpen] = useState(false);
   const [refiningScope, setRefiningScope] = useState(null);
+  const [refiningProjectField, setRefiningProjectField] = useState(null);
   const problemFieldRef = useRef(null);
   const workspaceMainRef = useRef(null);
   const lastLiteratureSummaryRef = useRef('');
@@ -187,6 +198,11 @@ function App() {
     const covered = rows.filter((row) => /^covered$/i.test(row.status)).length;
     return { covered, total: rows.length };
   }, [result]);
+
+  const selectedLiteraturePapers = useMemo(
+    () => filterSelectedLiteraturePapers(literature?.papers ?? [], selectedLiteraturePaperIds),
+    [literature?.papers, selectedLiteraturePaperIds]
+  );
 
   const generationProvider = useMemo(() => formatGenerationProvider(result), [result]);
 
@@ -283,6 +299,78 @@ function App() {
     activeWorkspaceView,
     suggestionIndex,
     decisionIndex,
+    llmModel
+  ]);
+
+  useEffect(() => {
+    if (!literature?.papers?.length) return undefined;
+
+    const allIds = literature.papers.map((paper) => paper.id);
+    const selected = filterSelectedLiteraturePapers(literature.papers, selectedLiteraturePaperIds);
+
+    if (!selected.length) {
+      setActiveLiteratureSummary({
+        relatedWorkParagraph: '',
+        gapNote: 'Select at least one paper to include in the summary and citations.'
+      });
+      setLiteratureSummaryStatus('idle');
+      return undefined;
+    }
+
+    if (
+      selected.length === allIds.length &&
+      selectedLiteraturePaperIds.length === allIds.length &&
+      literature.relatedWorkParagraph
+    ) {
+      setActiveLiteratureSummary({
+        relatedWorkParagraph: literature.relatedWorkParagraph,
+        gapNote: literature.gapNote || ''
+      });
+      setLiteratureSummaryStatus('idle');
+      return undefined;
+    }
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setLiteratureSummaryStatus('loading');
+
+      try {
+        const data = await postJson('/api/literature/synthesize', {
+          topic: project.title || project.topic || topicInput,
+          problem: project.problem,
+          papers: selected,
+          ...buildLlmExtras(llmModel)
+        });
+
+        if (!cancelled) {
+          setActiveLiteratureSummary({
+            relatedWorkParagraph: data.relatedWorkParagraph || '',
+            gapNote: data.gapNote || ''
+          });
+          setLiteratureSummaryStatus('idle');
+        }
+      } catch {
+        if (!cancelled) {
+          setActiveLiteratureSummary({
+            relatedWorkParagraph: '',
+            gapNote: 'Could not rebuild the summary for the selected papers. Try again or select all papers.'
+          });
+          setLiteratureSummaryStatus('idle');
+        }
+      }
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [
+    selectedLiteraturePaperIds,
+    literature,
+    project.title,
+    project.topic,
+    project.problem,
+    topicInput,
     llmModel
   ]);
 
@@ -400,7 +488,7 @@ function App() {
         ...project,
         topic: project.topic || project.title,
         requirements: DEFAULT_REQUIREMENTS,
-        literaturePapers: literature?.papers ?? [],
+        literaturePapers: selectedLiteraturePapers,
         ...buildLlmExtras(llmModel)
       });
 
@@ -439,6 +527,12 @@ function App() {
       });
 
       setLiterature(data);
+      setSelectedLiteraturePaperIds((data.papers || []).map((paper) => paper.id));
+      setActiveLiteratureSummary({
+        relatedWorkParagraph: data.relatedWorkParagraph || '',
+        gapNote: data.gapNote || ''
+      });
+      setLiteratureSummaryStatus('idle');
       setRunLog((current) => [
         ...current,
         logEntry('Literature', data.runMessage || `Retrieved ${data.papers?.length || 0} paper(s).`)
@@ -448,6 +542,26 @@ function App() {
     } finally {
       setLiteratureStatus('idle');
     }
+  }
+
+  function toggleLiteraturePaperSelection(paperId) {
+    setSelectedLiteraturePaperIds((current) => {
+      const next = new Set(current);
+      if (next.has(paperId)) next.delete(paperId);
+      else next.add(paperId);
+      return (literature?.papers ?? []).map((paper) => paper.id).filter((id) => next.has(id));
+    });
+    setLiteratureNotice('');
+  }
+
+  function selectAllLiteraturePapers() {
+    setSelectedLiteraturePaperIds((literature?.papers ?? []).map((paper) => paper.id));
+    setLiteratureNotice('');
+  }
+
+  function clearLiteraturePaperSelection() {
+    setSelectedLiteraturePaperIds([]);
+    setLiteratureNotice('');
   }
 
   function addPaperToReferences(paper) {
@@ -469,8 +583,15 @@ function App() {
   }
 
   function insertRelatedWork(paragraph) {
-    const text = String(paragraph ?? literature?.relatedWorkParagraph ?? '').trim();
-    const papers = literature?.papers ?? [];
+    const papers = selectedLiteraturePapers;
+    const text = String(
+      paragraph ?? activeLiteratureSummary.relatedWorkParagraph ?? literature?.relatedWorkParagraph ?? ''
+    ).trim();
+
+    if (!papers.length) {
+      setLiteratureNotice('Select at least one paper to include in Problem and Sources.');
+      return;
+    }
 
     if (!text) {
       setLiteratureNotice('No prior-research summary is available yet. Run a literature search first.');
@@ -831,6 +952,61 @@ function App() {
     clearArtifacts();
   }
 
+  async function strengthenProjectField(field, guidance = '') {
+    const label = labelForField(field);
+    setRefiningProjectField(field);
+    setError('');
+
+    try {
+      const response = await fetch('/api/agent/refine-field', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          field,
+          value: project[field] || '',
+          guidance,
+          project,
+          topic: project.topic || project.title || topicInput,
+          ...buildLlmExtras(llmModel)
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || data.error || 'Field refinement failed.');
+      }
+
+      updateProjectField(field, data.value || '');
+      setRunLog((current) => [
+        ...current,
+        logEntry(
+          'Project',
+          data.note ||
+          `Strengthened ${label}${data.mode === 'local-fallback' ? ' (local template)' : ''}.`
+        )
+      ]);
+
+      if (data.warning) {
+        setRunLog((current) => [
+          ...current,
+          logEntry('Project', `Model refine note for ${label}: ${data.warning}`)
+        ]);
+      }
+
+      return data;
+    } catch (requestError) {
+      const message = readError(requestError);
+      if (/cannot post|404|not found/i.test(message)) {
+        setError('Field refine API is unavailable. Restart the dev server (npm run dev) and try again.');
+      } else {
+        setError(message);
+      }
+      throw requestError;
+    } finally {
+      setRefiningProjectField(null);
+    }
+  }
+
   function clearArtifacts() {
     setResult(null);
     updatePdfUrl('');
@@ -865,6 +1041,9 @@ function App() {
     setLiterature(null);
     setLiteratureSource('auto');
     setLiteratureNotice('');
+    setSelectedLiteraturePaperIds([]);
+    setActiveLiteratureSummary({ relatedWorkParagraph: '', gapNote: '' });
+    setLiteratureSummaryStatus('idle');
     setLastInsertedLiteratureSummary('');
     lastLiteratureSummaryRef.current = '';
     setFocusedProjectField(null);
@@ -1395,6 +1574,10 @@ function App() {
                   literature={literature}
                   source={literatureSource}
                   status={literatureStatus}
+                  summaryStatus={literatureSummaryStatus}
+                  selectedPaperIds={selectedLiteraturePaperIds}
+                  summaryText={activeLiteratureSummary.relatedWorkParagraph}
+                  summaryGapNote={activeLiteratureSummary.gapNote}
                   references={project.references}
                   problemText={project.problem}
                   lastInsertedSummary={lastInsertedLiteratureSummary}
@@ -1404,6 +1587,9 @@ function App() {
                     setLiteratureNotice('');
                     searchLiterature();
                   }}
+                  onTogglePaperSelection={toggleLiteraturePaperSelection}
+                  onSelectAllPapers={selectAllLiteraturePapers}
+                  onClearPaperSelection={clearLiteraturePaperSelection}
                   onAddPaper={addPaperToReferences}
                   onInsertRelatedWork={insertRelatedWork}
                   onFocusProblem={focusProblemField}
@@ -1461,6 +1647,9 @@ function App() {
               value={project[focusedProjectField] || ''}
               onChange={(value) => updateProjectField(focusedProjectField, value)}
               onClose={closeProjectField}
+              onStrengthen={(guidance) => strengthenProjectField(focusedProjectField, guidance)}
+              refining={refiningProjectField === focusedProjectField}
+              llmConfigured={Boolean(llmConfig?.configured)}
               inputRef={focusedProjectField === 'problem' ? problemFieldRef : undefined}
             />
           ) : null}
@@ -1767,16 +1956,29 @@ function ExplainPanel({ explain, level, status, hasProposal, onChangeLevel, onEx
   );
 }
 
+function filterSelectedLiteraturePapers(papers, selectedIds) {
+  if (!Array.isArray(papers) || !papers.length) return [];
+  const selected = new Set(selectedIds || []);
+  return papers.filter((paper) => selected.has(paper.id));
+}
+
 function LiteraturePanel({
   literature,
   source,
   status,
+  summaryStatus,
+  selectedPaperIds,
+  summaryText,
+  summaryGapNote,
   references,
   problemText,
   lastInsertedSummary,
   insertNotice,
   onSourceChange,
   onSearch,
+  onTogglePaperSelection,
+  onSelectAllPapers,
+  onClearPaperSelection,
   onAddPaper,
   onInsertRelatedWork,
   onFocusProblem
@@ -1785,18 +1987,25 @@ function LiteraturePanel({
   const [paperPage, setPaperPage] = useState(0);
   const view = getLiteratureView(literature, status);
   const papers = literature?.papers ?? [];
+  const selectedSet = useMemo(() => new Set(selectedPaperIds || []), [selectedPaperIds]);
+  const selectedPapers = useMemo(
+    () => filterSelectedLiteraturePapers(papers, selectedPaperIds),
+    [papers, selectedPaperIds]
+  );
+  const selectedCount = selectedPapers.length;
   const totalPaperPages = Math.max(1, Math.ceil(papers.length / LITERATURE_PAPERS_PER_PAGE));
   const safePaperPage = Math.min(paperPage, totalPaperPages - 1);
   const pageStart = safePaperPage * LITERATURE_PAPERS_PER_PAGE;
   const visiblePapers = papers.slice(pageStart, pageStart + LITERATURE_PAPERS_PER_PAGE);
-  const summaryText = literature?.relatedWorkParagraph?.trim() || '';
+  const normalizedSummaryText = String(summaryText || '').trim();
   const normalizedProblem = normalizeProblemText(problemText);
-  const citationsUpToDate = areLiteratureCitationsInReferences(references, papers);
-  const summaryUpToDate = Boolean(summaryText && normalizedProblem.includes(summaryText) && citationsUpToDate);
+  const citationsUpToDate = areLiteratureCitationsInReferences(references, selectedPapers);
+  const summaryUpToDate = Boolean(normalizedSummaryText && normalizedProblem.includes(normalizedSummaryText) && citationsUpToDate);
   const hasStaleLiterature =
-    Boolean(summaryText && !summaryUpToDate) &&
+    Boolean(normalizedSummaryText && !summaryUpToDate) &&
     (hasAutoLiteratureSummary(normalizedProblem) ||
       Boolean(lastInsertedSummary && normalizedProblem.includes(lastInsertedSummary.trim())));
+  const summaryLoading = summaryStatus === 'loading';
 
   useEffect(() => {
     if (status === 'loading') {
@@ -1890,8 +2099,37 @@ function LiteraturePanel({
                   )}
                 </div>
                 <p className="literature-section-desc">
-                  {view.rankingHint || 'Click a paper to read more, then add citations to your Sources.'}
+                  Toggle which papers feed the summary below and bulk insert into Problem &amp; Sources.
                 </p>
+              </div>
+
+              <div className="literature-selection-bar">
+                <div className="literature-selection-meta">
+                  <span className="literature-selection-count">
+                    {selectedCount} of {papers.length} selected for summary &amp; citations
+                  </span>
+                  <span className="literature-selection-hint">
+                    Selected papers show a green number; deselected papers show a grey number. Click a number to toggle.
+                  </span>
+                </div>
+                <div className="literature-selection-actions">
+                  <button
+                    className="literature-selection-link"
+                    type="button"
+                    disabled={selectedCount === papers.length}
+                    onClick={onSelectAllPapers}
+                  >
+                    Select all
+                  </button>
+                  <button
+                    className="literature-selection-link"
+                    type="button"
+                    disabled={selectedCount === 0}
+                    onClick={onClearPaperSelection}
+                  >
+                    Clear all
+                  </button>
+                </div>
               </div>
 
               <div className="literature-results">
@@ -1901,7 +2139,9 @@ function LiteraturePanel({
                     rank={pageStart + index + 1}
                     paper={paper}
                     expanded={expandedId === paper.id}
+                    selected={selectedSet.has(paper.id)}
                     added={String(references || '').includes(paper.citation)}
+                    onToggleSelected={() => onTogglePaperSelection(paper.id)}
                     onToggle={() => setExpandedId((current) => (current === paper.id ? null : paper.id))}
                     onAdd={() => onAddPaper(paper)}
                   />
@@ -1941,20 +2181,33 @@ function LiteraturePanel({
               ) : null}
             </section>
 
-            {literature.relatedWorkParagraph ? (
+            {normalizedSummaryText || summaryLoading ? (
               <section className="literature-problem-snippet" aria-label="Relevant information summary from retrieved papers">
                 <div className="literature-section-header literature-section-header--stacked">
                   <div className="literature-section-title-row">
                     <h3>Relevant information summary</h3>
-                    <span className="literature-snippet-badge">From retrieved papers</span>
+                    <span className="literature-snippet-badge">
+                      {selectedCount === papers.length
+                        ? 'From all retrieved papers'
+                        : `From ${selectedCount} selected paper${selectedCount === 1 ? '' : 's'}`}
+                    </span>
                   </div>
                   <p className="literature-section-desc">
-                    Inserts the summary into Problem and adds formatted citations for all retrieved papers to Sources.
+                    Inserts the summary into Problem and adds formatted citations for selected papers to Sources.
                   </p>
                 </div>
                 <div className="literature-snippet-body">
-                  <p>{literature.relatedWorkParagraph}</p>
-                  {literature.gapNote ? <small className="literature-snippet-gap">{literature.gapNote}</small> : null}
+                  {summaryLoading ? (
+                    <div className="literature-summary-loading">
+                      <Loader2 className="spin" size={18} aria-hidden="true" />
+                      <p>Updating summary for selected papers…</p>
+                    </div>
+                  ) : (
+                    <>
+                      <p>{normalizedSummaryText}</p>
+                      {summaryGapNote ? <small className="literature-snippet-gap">{summaryGapNote}</small> : null}
+                    </>
+                  )}
                 </div>
                 {insertNotice ? (
                   <p className="literature-insert-notice" role="status">
@@ -1972,15 +2225,27 @@ function LiteraturePanel({
                 <button
                   className={summaryUpToDate ? 'secondary accepted literature-insert-btn' : 'primary literature-insert-btn'}
                   type="button"
-                  onClick={() => onInsertRelatedWork(summaryText)}
+                  disabled={selectedCount === 0 || summaryLoading || !normalizedSummaryText}
+                  onClick={() => onInsertRelatedWork(normalizedSummaryText)}
                 >
                   <FileText size={16} aria-hidden="true" />
-                  {summaryUpToDate
-                    ? 'Up to date in Problem & Sources'
-                    : hasStaleLiterature
-                      ? 'Update Problem & Sources'
-                      : 'Insert into Problem & Sources'}
+                  {selectedCount === 0
+                    ? 'Select papers to insert'
+                    : summaryUpToDate
+                      ? 'Up to date in Problem & Sources'
+                      : hasStaleLiterature
+                        ? 'Update Problem & Sources'
+                        : 'Insert into Problem & Sources'}
                 </button>
+              </section>
+            ) : selectedCount === 0 && papers.length ? (
+              <section className="literature-problem-snippet literature-problem-snippet--empty" aria-label="Relevant information summary">
+                <div className="literature-section-header literature-section-header--stacked">
+                  <div className="literature-section-title-row">
+                    <h3>Relevant information summary</h3>
+                  </div>
+                  <p className="literature-section-desc">Select at least one paper above to build a summary.</p>
+                </div>
               </section>
             ) : null}
           </>
@@ -2004,7 +2269,7 @@ function formatLiteratureAuthors(authors = [], { collapsed = false } = {}) {
   return `${authors.slice(0, 6).join(', ')}, +${authors.length - 6} more`;
 }
 
-function LiteraturePaperCard({ rank, paper, expanded, added, onToggle, onAdd }) {
+function LiteraturePaperCard({ rank, paper, expanded, selected, added, onToggleSelected, onToggle, onAdd }) {
   const authorPreview = formatLiteratureAuthors(paper.authors, { collapsed: true });
   const authorFull = formatLiteratureAuthors(paper.authors);
   const yearLabel = paper.year ? String(paper.year) : null;
@@ -2013,25 +2278,37 @@ function LiteraturePaperCard({ rank, paper, expanded, added, onToggle, onAdd }) 
   const venueLabel = paper.venue ? paper.venue : null;
 
   return (
-    <article className={`literature-card ${expanded ? 'is-expanded' : ''}`}>
-      <button className="literature-card-toggle" type="button" onClick={onToggle} aria-expanded={expanded}>
-        <span className="literature-paper-rank" aria-hidden="true">
+    <article className={`literature-card ${expanded ? 'is-expanded' : ''} ${selected ? 'is-selected' : 'is-deselected'}`}>
+      <div className="literature-card-head">
+        <button
+          type="button"
+          className={`literature-paper-rank ${selected ? 'is-selected' : 'is-deselected'}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleSelected();
+          }}
+          aria-pressed={selected}
+          aria-label={`${selected ? 'Exclude' : 'Include'} "${paper.title}" in summary and citations`}
+          title={selected ? 'Exclude from summary & citations' : 'Include in summary & citations'}
+        >
           {rank}
-        </span>
-        <div className="literature-card-summary">
-          <h3>{paper.title}</h3>
-          <p className="literature-card-authors">{authorPreview}</p>
-          {yearLabel || citationLabel ? (
-            <p className="literature-card-meta-line">
-              {[yearLabel, citationLabel].filter(Boolean).join(' · ')}
-            </p>
-          ) : null}
-        </div>
-        <div className="literature-card-meta">
-          <span className="literature-badge">{formatSourceLabel(paper.source)}</span>
-          <ChevronDown size={18} className={expanded ? 'chevron open' : 'chevron'} aria-hidden="true" />
-        </div>
-      </button>
+        </button>
+        <button className="literature-card-toggle" type="button" onClick={onToggle} aria-expanded={expanded}>
+          <div className="literature-card-summary">
+            <h3>{paper.title}</h3>
+            <p className="literature-card-authors">{authorPreview}</p>
+            {yearLabel || citationLabel ? (
+              <p className="literature-card-meta-line">
+                {[yearLabel, citationLabel].filter(Boolean).join(' · ')}
+              </p>
+            ) : null}
+          </div>
+          <div className="literature-card-meta">
+            <span className="literature-badge">{formatSourceLabel(paper.source)}</span>
+            <ChevronDown size={18} className={expanded ? 'chevron open' : 'chevron'} aria-hidden="true" />
+          </div>
+        </button>
+      </div>
 
       {expanded ? (
         <div className="literature-card-details">
@@ -2859,25 +3136,56 @@ function projectFieldPlaceholder(field, label) {
   return `Write or refine your ${label.toLowerCase()} here…`;
 }
 
-function ProjectFieldEditor({ field, label, value, onChange, onClose, inputRef }) {
+function ProjectFieldEditor({
+  field,
+  label,
+  value,
+  onChange,
+  onClose,
+  onStrengthen,
+  refining,
+  llmConfigured,
+  inputRef
+}) {
   const charCount = String(value || '').length;
+  const canRefineWithAi = AI_REFINABLE_PROJECT_FIELDS.has(field);
+  const [guidance, setGuidance] = useState('');
+  const [refineOpen, setRefineOpen] = useState(false);
+  const [refineNote, setRefineNote] = useState('');
 
   useEffect(() => {
     const handleKeyDown = (event) => {
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' && !refining) {
         onClose();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  }, [onClose, refining]);
 
   useEffect(() => {
     requestAnimationFrame(() => {
       inputRef?.current?.focus({ preventScroll: true });
     });
   }, [field, inputRef]);
+
+  useEffect(() => {
+    setGuidance('');
+    setRefineOpen(false);
+    setRefineNote('');
+  }, [field]);
+
+  async function handleStrengthen() {
+    if (refining) return;
+
+    try {
+      const result = await onStrengthen(guidance);
+      setRefineNote(result?.note || `Strengthened ${label.toLowerCase()}.`);
+    } catch {
+      setRefineNote('');
+    }
+  }
 
   return (
     <div
@@ -2886,7 +3194,13 @@ function ProjectFieldEditor({ field, label, value, onChange, onClose, inputRef }
       aria-modal="true"
       aria-labelledby={`project-field-focus-title-${field}`}
     >
-      <button type="button" className="project-field-focus-backdrop" aria-label="Close editor" onClick={onClose} />
+      <button
+        type="button"
+        className="project-field-focus-backdrop"
+        aria-label="Close editor"
+        onClick={onClose}
+        disabled={refining}
+      />
 
       <div className="project-field-focus-panel">
         <header className="project-field-focus-header">
@@ -2894,27 +3208,81 @@ function ProjectFieldEditor({ field, label, value, onChange, onClose, inputRef }
             <p className="project-field-focus-kicker">Editing section</p>
             <h2 id={`project-field-focus-title-${field}`}>{label}</h2>
           </div>
-          <button className="secondary project-field-focus-close" type="button" onClick={onClose}>
+          <button className="secondary project-field-focus-close" type="button" onClick={onClose} disabled={refining}>
             <X size={18} aria-hidden="true" />
             Close
           </button>
         </header>
 
         <div className="project-field-focus-body">
-          <textarea
-            ref={inputRef}
-            className="project-field-focus-textarea"
-            value={value}
-            onChange={(event) => onChange(event.target.value)}
-            placeholder={projectFieldPlaceholder(field, label)}
-          />
+          <div className="project-field-focus-editor">
+            <textarea
+              ref={inputRef}
+              className="project-field-focus-textarea"
+              value={value}
+              onChange={(event) => onChange(event.target.value)}
+              placeholder={projectFieldPlaceholder(field, label)}
+              disabled={refining}
+            />
+
+            {canRefineWithAi && refineOpen ? (
+              <div className="project-field-refine">
+                <div className="project-field-refine-head">
+                  <span>Guide the model</span>
+                  <button
+                    className="ghost-action ghost-action--compact"
+                    type="button"
+                    onClick={() => setRefineOpen(false)}
+                    disabled={refining}
+                  >
+                    Hide
+                  </button>
+                </div>
+                <textarea
+                  className="project-field-refine-input"
+                  value={guidance}
+                  onChange={(event) => setGuidance(event.target.value)}
+                  placeholder={`Tell the model how to strengthen this ${label.toLowerCase()} section. Example: add more detail on baselines, make milestones more concrete, or tighten the technical workflow.`}
+                  rows={3}
+                  disabled={refining}
+                />
+                {!llmConfigured ? (
+                  <p className="project-field-refine-note">
+                    No API key configured — the local template will strengthen this section until OpenRouter or another model is connected.
+                  </p>
+                ) : null}
+                {refineNote ? <p className="project-field-refine-result">{refineNote}</p> : null}
+              </div>
+            ) : null}
+          </div>
         </div>
 
         <footer className="project-field-focus-footer">
           <span className="project-field-focus-meta">{charCount} characters</span>
-          <button className="primary" type="button" onClick={onClose}>
-            Done editing
-          </button>
+          <div className="project-field-focus-actions">
+            {canRefineWithAi ? (
+              <>
+                <button
+                  className={refineOpen ? 'secondary active' : 'secondary'}
+                  type="button"
+                  onClick={() => setRefineOpen((open) => !open)}
+                  disabled={refining}
+                >
+                  <Sparkles size={16} aria-hidden="true" />
+                  {refineOpen ? 'Hide AI refine' : 'Strengthen with AI'}
+                </button>
+                {refineOpen ? (
+                  <button className="primary" type="button" onClick={handleStrengthen} disabled={refining}>
+                    {refining ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
+                    {refining ? 'Strengthening…' : 'Generate stronger text'}
+                  </button>
+                ) : null}
+              </>
+            ) : null}
+            <button className="primary" type="button" onClick={onClose} disabled={refining}>
+              Done editing
+            </button>
+          </div>
         </footer>
       </div>
     </div>

@@ -1103,3 +1103,29 @@ function isOperationalGapNote(note) {
     /llm enrichment disabled/.test(text)
   );
 }
+
+export function synthesizeLiteratureSummary({ topic, problem, papers }) {
+  const list = Array.isArray(papers) ? papers.filter((paper) => clean(paper?.title)) : [];
+
+  if (!list.length) {
+    return {
+      relatedWorkParagraph: '',
+      gapNote: 'Select at least one paper to include in the summary and citations.',
+      paperCount: 0,
+      mode: 'empty'
+    };
+  }
+
+  const relatedWorkParagraph = finalizeRelatedWorkSummary('', topic, problem, list);
+  const gapNote =
+    list.length === 1
+      ? 'One selected paper is included in this summary.'
+      : `${list.length} selected papers are included in this summary.`;
+
+  return {
+    relatedWorkParagraph,
+    gapNote,
+    paperCount: list.length,
+    mode: 'local-synthesis'
+  };
+}

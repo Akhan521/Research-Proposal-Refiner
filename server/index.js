@@ -2,7 +2,8 @@ import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
 import { explainProposal } from './explain.js';
-import { searchLiterature } from './literature.js';
+import { refineProjectField } from './refineField.js';
+import { searchLiterature, synthesizeLiteratureSummary } from './literature.js';
 import { proposalLatexToPdf } from './pdfExport.js';
 import {
   answerAgentQuestion,
@@ -88,6 +89,32 @@ app.post('/api/agent/refine-structure', async (request, response) => {
   }
 });
 
+app.post('/api/agent/refine-field', async (request, response) => {
+  try {
+    const payload = request.body || {};
+    const field = String(payload.field || '').trim();
+    const project = payload.project || {};
+    const topic = String(project.topic || project.title || payload.topic || '').trim();
+
+    if (!field) {
+      response.status(400).json({ error: 'Field is required.' });
+      return;
+    }
+
+    if (!topic) {
+      response.status(400).json({ error: 'Project title or topic is required for context.' });
+      return;
+    }
+
+    response.json(await refineProjectField(payload));
+  } catch (error) {
+    response.status(400).json({
+      error: 'Field refinement failed.',
+      detail: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
 app.post('/api/proposal', async (request, response) => {
   try {
     const payload = request.body || {};
@@ -129,6 +156,32 @@ app.post('/api/literature', async (request, response) => {
   } catch (error) {
     response.status(500).json({
       error: 'Literature search failed.',
+      detail: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
+app.post('/api/literature/synthesize', async (request, response) => {
+  try {
+    const payload = request.body || {};
+    const topic = String(payload.topic || payload.project?.topic || payload.project?.title || '').trim();
+    const papers = Array.isArray(payload.papers) ? payload.papers : [];
+
+    if (!papers.length) {
+      response.json(synthesizeLiteratureSummary({ topic, problem: payload.problem, papers: [] }));
+      return;
+    }
+
+    response.json(
+      synthesizeLiteratureSummary({
+        topic,
+        problem: payload.problem || payload.project?.problem,
+        papers
+      })
+    );
+  } catch (error) {
+    response.status(500).json({
+      error: 'Literature summary synthesis failed.',
       detail: error instanceof Error ? error.message : String(error)
     });
   }
