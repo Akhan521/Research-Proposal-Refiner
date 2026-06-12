@@ -190,6 +190,56 @@ function findLatexParagraphDuplicates(latex) {
   return duplicates;
 }
 
+function extractNamedSectionBodies(latex) {
+  const sections = [];
+  const pattern = /\\section\*?\{([^}]+)\}([\s\S]*?)(?=\\section\*?\{|\\end\{document\})/gi;
+  let match;
+
+  while ((match = pattern.exec(String(latex || ''))) !== null) {
+    sections.push({
+      name: clean(match[1]),
+      plain: stripLatexToPlain(match[2])
+    });
+  }
+
+  return sections;
+}
+
+function findCrossSectionSentenceDuplicates(latex) {
+  const sections = extractNamedSectionBodies(latex);
+  const seen = new Map();
+  const duplicates = [];
+
+  for (const section of sections) {
+    for (const sentence of splitSentences(section.plain)) {
+      const key = normalizeSentence(sentence);
+      if (key.length < MIN_CROSS_FIELD_CHARS) continue;
+
+      const prior = seen.get(key);
+      if (prior && prior.name !== section.name) {
+        const involvesAbstract = /abstract/i.test(prior.name) || /abstract/i.test(section.name);
+        if (involvesAbstract) continue;
+
+        const names = [prior.name, section.name];
+        const milestonesAndEvaluation =
+          names.some((name) => /expected results|research milestones|milestone/i.test(name)) &&
+          names.some((name) => /evaluation plan/i.test(name));
+        if (milestonesAndEvaluation) continue;
+
+        duplicates.push({
+          kind: 'cross-section',
+          sections: [prior.name, section.name],
+          sentence: sentence.slice(0, 120)
+        });
+      } else if (!prior) {
+        seen.set(key, { name: section.name, sentence });
+      }
+    }
+  }
+
+  return duplicates;
+}
+
 export function validateProjectRedundancy(project = {}) {
   const issues = [];
   const warnings = [];
@@ -226,14 +276,20 @@ export function validateProjectRedundancy(project = {}) {
 }
 
 export function validateLatexRedundancy(latex = '') {
-  const duplicates = findLatexParagraphDuplicates(latex);
-  const warnings = duplicates.map(
+  const paragraphDuplicates = findLatexParagraphDuplicates(latex);
+  const crossSectionDuplicates = findCrossSectionSentenceDuplicates(latex);
+  const duplicates = [...paragraphDuplicates, ...crossSectionDuplicates];
+  const warnings = paragraphDuplicates.map(
     (item) => `Repeated paragraph in final proposal: "${item.preview}"`
+  );
+  const issues = crossSectionDuplicates.map(
+    (item) =>
+      `Redundant sentence in "${item.sections[0]}" and "${item.sections[1]}": "${item.sentence}"`
   );
 
   return {
-    ok: warnings.length === 0,
-    issues: [],
+    ok: issues.length === 0 && warnings.length === 0,
+    issues,
     warnings,
     duplicates,
     duplicateCount: duplicates.length
@@ -258,6 +314,16 @@ export function prepareProjectForProposal(project = {}) {
   };
 }
 
+function normalizeRequirementKey(value) {
+  return clean(value).toLowerCase();
+}
+
+export function applyRedundancyCompliancePenalties(matrix = [], _redundancy = {}) {
+  // Redundancy is reported in the evaluation report only. Coverage rows reflect
+  // whether required sections exist in the enforced proposal, not prose overlap.
+  return matrix;
+}
+
 export function appendRedundancyNote(report = '', redundancy = {}) {
   const base = clean(report);
   const precheck = redundancy.precheck || {};
@@ -268,12 +334,16 @@ export function appendRedundancyNote(report = '', redundancy = {}) {
     notes.push('- Duplicate sentences were removed from project fields before proposal generation.');
   }
 
+  for (const issue of precheck.issues || []) {
+    notes.push(`- Issue: ${issue}`);
+  }
+
   for (const warning of precheck.warnings || []) {
     notes.push(`- ${warning}`);
   }
 
-  for (const issue of precheck.issues || []) {
-    notes.push(`- ${issue}`);
+  for (const issue of postcheck.issues || []) {
+    notes.push(`- Issue: ${issue}`);
   }
 
   for (const warning of postcheck.warnings || []) {

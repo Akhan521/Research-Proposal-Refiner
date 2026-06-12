@@ -34,6 +34,7 @@ import {
   formatMilestoneValidationNote,
   normalizeEvaluationField,
   normalizeTimelineField,
+  validateEvaluationExportReadiness,
   validateMilestonePlan
 } from './proposalSections.js';
 import {
@@ -658,6 +659,11 @@ async function callOpenAiCompatible({ systemPrompt, payload, model, temperature 
   return readModelContent(data);
 }
 
+export function rebuildEnforcedProposal(project, options = {}) {
+  const baseLatex = buildLocalProposalLatex(project);
+  return buildEnforcedProposalLatex(baseLatex, project, options);
+}
+
 function buildEnforcedProposalLatex(baseLatex, project, options = {}) {
   const title = project.title || project.topic || 'proposal';
   const cleanedBase = repairUnescapedSpecialChars(
@@ -816,7 +822,6 @@ async function finalizeProposalOutput(result, project, checklist, options = {}) 
     precheck: options.redundancyPrecheck || {},
     postcheck: redundancyPostcheck
   });
-
   return {
     ...result,
     proposalLatex: layoutLatex,
@@ -1540,12 +1545,16 @@ function findRequirementEvidence(requirement, project) {
   if (/method|workflow|approach/.test(text) && project.method) return project.method;
   if (/expected|milestone|timeline/.test(text) && project.timeline) {
     const validation = validateMilestonePlan(project.timeline, project);
-    if (validation.ok && validation.milestoneCount >= 3) {
+    if (validation.milestoneCount >= 3) {
       return `${validation.milestoneCount} phased milestones with expected results and research-question alignment.`;
     }
-    return project.timeline;
+    return '';
   }
-  if (/evaluation|metric|test/.test(text) && project.evaluation) return project.evaluation;
+  if (/evaluation|metric|test/.test(text) && project.evaluation) {
+    const readiness = validateEvaluationExportReadiness(project.evaluation, project);
+    if (readiness.ok) return readiness.summary;
+    return '';
+  }
   if (/risk|mitigation/.test(text)) return 'Fallback draft includes risks and mitigations.';
   if (/resource|budget|tool/.test(text) && project.resources) return project.resources;
   if (/reference|assumption|source/.test(text) && project.references) {
@@ -1838,7 +1847,7 @@ export function buildComplianceMatrixFromDraft(checklist, project, proposalLatex
   return checklist.map((requirement, index) => {
     const apiMatch = matchComplianceRow(requirement, normalizedRows, index, checklist.length);
     const draftEvidence =
-      findRequirementEvidence(requirement, project) || findEvidenceInLatex(requirement, proposalLatex);
+      findEvidenceInLatex(requirement, proposalLatex) || findRequirementEvidence(requirement, project);
     const apiEvidence =
       apiMatch?.evidence && !isMatrixPlaceholderEvidence(apiMatch.evidence) ? apiMatch.evidence : '';
 
@@ -1905,14 +1914,43 @@ function findEvidenceInLatex(requirement, proposalLatex) {
   if (/figure|diagram/.test(text) && (/\\begin{figure/.test(latex) || /\\caption{/.test(latex) || /tikzpicture/.test(latex))) {
     return 'Proposal draft includes a figure or diagram with caption.';
   }
-  if (/expected|result/.test(text) && latexSectionMatches(latex, ['expected', 'result', 'outcome'])) {
-    return 'Proposal draft includes expected results.';
+  if (/expected|result/.test(text) && !/milestone|timeline/.test(text)) {
+    const block =
+      latex.match(/\\subsection\*\{Expected Results\}([\s\S]*?)(?=\\subsection\*|\\section)/i)?.[0] || '';
+    const items = (block.match(/\\item\b/g) || []).length;
+    if (items >= 1) {
+      return `Expected results subsection with ${items} enumerated outcome(s).`;
+    }
   }
-  if (/milestone|timeline/.test(text) && latexSectionMatches(latex, ['milestone', 'timeline', 'schedule'])) {
-    return 'Proposal draft includes milestones or timeline content.';
+  if (/milestone|timeline/.test(text)) {
+    const block =
+      latex.match(
+        /\\subsection\*\{Research Milestones and Timeline\}([\s\S]*?)(?=\\subsection\*|\\section)/i
+      )?.[1] || '';
+    const items = (block.match(/\\item\b/g) || []).length;
+    const timed = (block.match(/\\textbf\{/g) || []).length;
+    if (items >= 3) {
+      return `Research milestones section with ${items} milestone(s)${timed ? ' and timeline estimates' : ''}.`;
+    }
   }
   if (/evaluation|metric/.test(text) && latexSectionMatches(latex, ['evaluation', 'metric', 'benchmark', 'test'])) {
-    return 'Proposal draft includes an evaluation plan.';
+    const block =
+      latex.match(/\\section\*?\{Evaluation Plan\}([\s\S]*?)(?=\\section\*?\{|\\end\{document\})/i)?.[1] || '';
+    const required = [
+      ['metrics', /Metrics and Benchmarks/i],
+      ['baselines', /Comparative Baselines/i],
+      ['analysis', /Analysis Plan/i],
+      ['success', /Success Criteria/i]
+    ];
+    if (required.every(([, pattern]) => pattern.test(block))) {
+      if (/Research Questions and Hypotheses Addressed/i.test(latex)) {
+        return 'Evaluation plan includes metrics, baselines, analysis, and success criteria; research questions are mapped in milestones.';
+      }
+      if (/Research Questions and Hypotheses/i.test(block)) {
+        return 'Evaluation plan includes research questions, metrics, baselines, analysis, and success criteria.';
+      }
+      return 'Evaluation plan includes metrics, baselines, analysis, and success criteria.';
+    }
   }
   if (/risk|mitigation/.test(text) && latexSectionMatches(latex, ['risk', 'mitigation'])) {
     return 'Proposal draft discusses risks and mitigation.';

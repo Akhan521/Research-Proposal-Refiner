@@ -16,6 +16,8 @@ const ITEMIZE_OPTIONS =
   '[leftmargin=*,itemsep=0.35em,parsep=0pt,topsep=0.35em,partopsep=0pt]';
 const ENUMERATE_OPTIONS =
   '[leftmargin=*,itemsep=0.35em,parsep=0pt,topsep=0.35em,partopsep=0pt]';
+const RQ_ENUMERATE_OPTIONS =
+  '[label=\\textbf{RQ\\arabic*.},leftmargin=2.4em,itemsep=0.35em,parsep=0pt,topsep=0.35em]';
 
 const EVALUATION_SECTIONS = [
   {
@@ -131,28 +133,180 @@ function buildEvaluationAbstractPhrase(evaluation, project = {}) {
     const items = sections.get(key) || [];
     if (!items.length) continue;
 
-    const phrase = truncateToSentences(stripProblemBoilerplate(stripLeadingLabel(items[0]), project.problem), 1)
+    const phrase = truncateToSentences(
+      stripProblemBoilerplate(stripEmbeddedEvaluationLabels(stripLeadingLabel(items[0])), project.problem),
+      1
+    )
       .replace(/\.$/, '')
       .trim();
-    if (phrase.length >= 20) return phrase;
+    if (phrase.length >= 20) return polishAbstractEvaluationPhrase(phrase);
   }
 
   const researchQuestions = sections.get('research_questions') || [];
   if (researchQuestions.length) {
     const phrase = truncateToSentences(
-      stripProblemBoilerplate(stripLeadingLabel(researchQuestions[0]), project.problem),
+      stripProblemBoilerplate(stripEmbeddedEvaluationLabels(stripLeadingLabel(researchQuestions[0])), project.problem),
       1
     )
       .replace(/\.$/, '')
       .trim();
-    if (phrase.length >= 20) return phrase;
+    if (phrase.length >= 20) return polishAbstractEvaluationPhrase(phrase);
   }
 
-  return truncateToSentences(stripProblemBoilerplate(text, project.problem), 1).replace(/\.$/, '').trim();
+  return polishAbstractEvaluationPhrase(
+    truncateToSentences(stripProblemBoilerplate(text, project.problem), 1).replace(/\.$/, '').trim()
+  );
+}
+
+function polishAbstractEvaluationPhrase(phrase) {
+  let result = clean(phrase).replace(/[.!?]+$/, '');
+  result = result.replace(OBJECTIVE_FILLER_PREFIX, '');
+  if (/^evaluate\b/i.test(result)) {
+    result = `evaluation on ${result.slice(8).trim()}`;
+  }
+  return result;
 }
 
 function escapeRegExp(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const OBJECTIVE_FILLER_PREFIX =
+  /^(?:we will|this (?:proposal|project) will|the (?:proposal|project) will|our (?:approach|method) will|to)\s+/i;
+
+const EVALUATION_LABEL_PHRASES = EVALUATION_SECTIONS.flatMap((section) => [
+  section.label,
+  ...section.aliases
+]).sort((left, right) => right.length - left.length);
+
+function preprocessTimelineText(text) {
+  let result = String(text || '').replace(/\r\n/g, '\n').trim();
+  if (!result) return '';
+
+  result = result.replace(/\s+(Expected results?\s*:)/gi, '\n$1\n');
+  result = result.replace(/\s+(?=Milestone\s+\d+)/gi, '\n');
+  result = result.replace(/\s+(?=Phase\s+\d+)/gi, '\n');
+
+  return result
+    .split(/\n+/)
+    .map((line) => clean(line))
+    .filter(Boolean)
+    .join('\n');
+}
+
+function extractNumberedExpectedResults(text) {
+  const value = clean(text);
+  if (!/\(\d+\)/.test(value)) return [];
+
+  const beforeMilestones = value.split(/\bMilestone\s+\d+/i)[0];
+  const items = [];
+
+  for (const match of beforeMilestones.matchAll(/\(\d+\)\s*([\s\S]*?)(?=\(\d+\)|$)/g)) {
+    const item = clean(match[1]).replace(/[.;]\s*$/, '');
+    if (item.length >= 12) items.push(item);
+  }
+
+  return items;
+}
+
+function splitInlineEvaluationLabels(text) {
+  let result = clean(text);
+  if (!result) return '';
+
+  for (const label of EVALUATION_LABEL_PHRASES) {
+    const pattern = new RegExp(`(?<!^)\\s+(${escapeRegExp(label)})\\s*:`, 'gi');
+    result = result.replace(pattern, '\n$1:');
+  }
+
+  return result
+    .split(/\n+/)
+    .map((line) => clean(line))
+    .filter(Boolean)
+    .join('\n');
+}
+
+function stripEmbeddedEvaluationLabels(text) {
+  let result = clean(text);
+  if (!result) return '';
+
+  for (const label of EVALUATION_LABEL_PHRASES) {
+    result = result.replace(new RegExp(`\\s*${escapeRegExp(label)}\\s*:\\s*`, 'gi'), ' ');
+    result = result.replace(new RegExp(`\\s*${escapeRegExp(label)}\\.?\\s*$`, 'gi'), '');
+    result = result.replace(new RegExp(`^${escapeRegExp(label)}\\s+`, 'i'), '');
+  }
+
+  return clean(result);
+}
+
+function isEvaluationLabelFragment(text) {
+  const cleaned = clean(stripEmbeddedEvaluationLabels(text));
+  if (!cleaned || cleaned.length < 12) return true;
+
+  for (const label of EVALUATION_LABEL_PHRASES) {
+    if (new RegExp(`^${escapeRegExp(label)}\\.?$`, 'i').test(cleaned)) {
+      return true;
+    }
+  }
+
+  return /^(?:comparative|ablations?|metrics?|benchmarks?|analysis|success)(?:\s+and)?\.?$/i.test(
+    cleaned
+  );
+}
+
+function polishMethodForObjective(text) {
+  let result = clean(text).replace(/[.!?]+$/, '');
+  result = result.replace(OBJECTIVE_FILLER_PREFIX, '');
+
+  if (/^use\s+/i.test(result)) {
+    result = `employ ${result.slice(4).trim()}`;
+  } else if (/^implement\s+/i.test(result)) {
+    result = `implement ${result.slice(10).trim()}`;
+  }
+
+  if (/^investigate whether/i.test(result)) {
+    return result;
+  }
+
+  if (!/^(develop|design|investigate|build|train|evaluate|propose|study|create|implement|employ|determine|use)\b/i.test(result)) {
+    return `investigate whether ${result.charAt(0).toLowerCase()}${result.slice(1)}`;
+  }
+
+  return result;
+}
+
+function inferDefaultResearchQuestion(project = {}) {
+  const evaluation = clean(project.evaluation);
+  const rqLine = evaluation.match(/(?:^|\n)\s*(?:RQ\d+|research questions?[^:]*):\s*([^\n]+)/i);
+  if (rqLine?.[1]) {
+    return ensureSentence(stripEmbeddedEvaluationLabels(stripLeadingLabel(rqLine[1])));
+  }
+
+  const hypothesis = evaluation.match(/hypothesis:\s*([^.!?]+[.!?]+)/i);
+  if (hypothesis?.[1]) {
+    return ensureSentence(`RQ1: ${stripEmbeddedEvaluationLabels(hypothesis[1])}`);
+  }
+
+  return 'RQ1: Does process-based reinforcement learning with dense step-level rewards improve multi-step mathematical reasoning accuracy relative to supervised fine-tuning and outcome-only RL baselines?';
+}
+
+function dedupeEvaluationSections(sections) {
+  const seen = new Set();
+
+  for (const section of EVALUATION_SECTIONS) {
+    const items = sections.get(section.key) || [];
+    const unique = [];
+
+    for (const item of items) {
+      const normalized = normalizeSentenceKey(stripEmbeddedEvaluationLabels(item));
+      if (normalized.length >= 40 && seen.has(normalized)) continue;
+      if (normalized.length >= 40) seen.add(normalized);
+      unique.push(stripEmbeddedEvaluationLabels(item));
+    }
+
+    sections.set(section.key, unique);
+  }
+
+  return sections;
 }
 
 function stripLeadingLabel(line) {
@@ -226,7 +380,7 @@ function normalizeKey(value) {
 }
 
 function parseMilestoneEntries(timelineText) {
-  const lines = splitLines(timelineText);
+  const lines = splitLines(preprocessTimelineText(timelineText));
   const milestones = [];
   const expectedResults = [];
   let inExpected = false;
@@ -244,7 +398,12 @@ function parseMilestoneEntries(timelineText) {
 
     const expectedInline = line.match(/^expected results?\s*:\s*(.+)$/i);
     if (expectedInline) {
-      expectedResults.push(expectedInline[1].trim());
+      const numbered = extractNumberedExpectedResults(expectedInline[1]);
+      if (numbered.length >= 2) {
+        expectedResults.push(...numbered);
+      } else {
+        expectedResults.push(expectedInline[1].trim());
+      }
       inExpected = true;
       continue;
     }
@@ -315,8 +474,34 @@ function extractTiming(text) {
   return match ? match[1].trim() : '';
 }
 
+function expandExpectedResultItems(expectedResults) {
+  const expanded = [];
+
+  for (const entry of expectedResults.filter(Boolean)) {
+    const numbered = extractNumberedExpectedResults(entry);
+    if (numbered.length >= 2) {
+      expanded.push(...numbered);
+      continue;
+    }
+
+    const semicolonParts = clean(entry)
+      .split(/;\s+(?=[A-Z(])/)
+      .map((part) => clean(part))
+      .filter((part) => part.length >= 20);
+
+    if (semicolonParts.length >= 2) {
+      expanded.push(...semicolonParts);
+      continue;
+    }
+
+    expanded.push(entry);
+  }
+
+  return expanded;
+}
+
 function inferExpectedResults(project, milestones, explicitResults) {
-  const results = [...explicitResults.filter(Boolean)];
+  const results = expandExpectedResultItems(explicitResults);
 
   if (!results.length && milestones.length) {
     const last = milestones[milestones.length - 1];
@@ -405,14 +590,106 @@ export function extractResearchQuestionsAndHypotheses(evaluationText, project = 
       .filter(Boolean);
 
     if (parts.length > 1) {
-      results.push(...parts.map((part) => ensureSentence(stripLeadingLabel(part))));
+      results.push(...parts.map((part) => normalizeResearchQuestionText(part)));
       continue;
     }
 
-    results.push(ensureSentence(stripLeadingLabel(entry)));
+    results.push(normalizeResearchQuestionText(entry));
   }
 
-  return results;
+  return results.filter(isValidResearchQuestion);
+}
+
+function normalizeResearchQuestionText(text) {
+  let result = stripEmbeddedEvaluationLabels(stripLeadingLabel(text));
+  result = result.replace(/^RQ\d+\s*:?\s*/i, '').trim();
+  result = result.replace(/^hypothesis\s*:?\s*/i, '').trim();
+  return ensureSentence(result);
+}
+
+function isValidResearchQuestion(text) {
+  const cleaned = clean(stripLeadingLabel(stripEmbeddedEvaluationLabels(text)));
+  if (!cleaned || cleaned.length < 20) return false;
+
+  if (/^(?:metrics(?:\s+and(?:\s+benchmarks?)?)?|benchmarks?|baselines?|analysis(?:\s+plan)?|success(?:\s+criteria)?)\b/i.test(cleaned)) {
+    return false;
+  }
+
+  if (/^(?:metrics|benchmarks|baselines|analysis|success)(?:\s+and)?\.?$/i.test(cleaned)) {
+    return false;
+  }
+
+  if (/\?/.test(cleaned)) return true;
+  if (/^(?:does|can|will|how|whether|if|hypothesis)\b/i.test(cleaned)) return true;
+  if (/^RQ\d+\b/i.test(cleaned)) return true;
+
+  return wordCount(cleaned) >= 8;
+}
+
+function sanitizeResearchQuestionSection(sections, project = {}) {
+  const raw = sections.get('research_questions') || [];
+  const expanded = [];
+
+  for (const entry of raw) {
+    const cleaned = stripLeadingLabel(entry);
+    const parts = cleaned
+      .split(/(?=(?:RQ\d+|Hypothesis)\s*:)/i)
+      .map((part) => clean(part))
+      .filter(Boolean);
+    const candidates = parts.length > 1 ? parts : [cleaned];
+
+    for (const part of candidates) {
+      const normalized = normalizeResearchQuestionText(part);
+      if (isValidResearchQuestion(normalized)) {
+        expanded.push(normalized);
+        continue;
+      }
+
+      if (/^hypothesis\b/i.test(clean(part)) && wordCount(normalized) >= 6) {
+        expanded.push(normalized);
+      }
+    }
+  }
+
+  const seen = new Set();
+  const unique = [];
+  for (const item of expanded) {
+    const key = normalizeSentenceKey(item);
+    if (key.length >= 30 && seen.has(key)) continue;
+    if (key.length >= 30) seen.add(key);
+    unique.push(item);
+  }
+
+  if (!unique.length) {
+    unique.push(inferDefaultResearchQuestion(project));
+  }
+
+  sections.set('research_questions', unique);
+  return sections;
+}
+
+export function milestonePlanIncludesRQMapping(project = {}) {
+  const preprocessed = preprocessTimelineText(project.timeline || '');
+  if (!preprocessed) return false;
+
+  const repaired = repairTimelineIfNeeded(preprocessed, project);
+  const normalizedTimeline = repaired.repaired ? repaired.timeline : preprocessed;
+  const validation = validateMilestonePlan(normalizedTimeline, project);
+  return (
+    validation.milestones.length > 0 &&
+    validation.rqMappings.some((mapping) => isValidResearchQuestion(mapping.question))
+  );
+}
+
+export function stripDuplicateEvaluationResearchQuestions(latex) {
+  if (!/Research Questions and Hypotheses Addressed/i.test(latex)) {
+    return latex;
+  }
+
+  return String(latex || '').replace(
+    /\\subsection\*\{Research Questions and Hypotheses\}\s*[\s\S]*?(?=\\subsection\*\{|\\section\*?\{|\\end\{document\})/i,
+    ''
+  );
 }
 
 function milestoneCoversQuestion(question, milestones) {
@@ -445,7 +722,7 @@ export function mapMilestonesToResearchQuestions(milestones, researchQuestions) 
 }
 
 export function validateMilestonePlan(timelineText, project = {}) {
-  const parsed = parseMilestoneEntries(timelineText);
+  const parsed = parseMilestoneEntries(preprocessTimelineText(timelineText));
   const milestones = renumberMilestones(parsed.milestones.filter((entry) => clean(entry.description)));
   const researchQuestions = extractResearchQuestionsAndHypotheses(project.evaluation, project);
   const issues = [];
@@ -551,7 +828,7 @@ function formatTimelineFromParts(expectedResults, milestones) {
 }
 
 export function repairTimelineIfNeeded(timelineText, project = {}) {
-  const parsed = parseMilestoneEntries(timelineText);
+  const parsed = parseMilestoneEntries(preprocessTimelineText(timelineText));
   let milestones = renumberMilestones(parsed.milestones.filter((entry) => clean(entry.description)));
   let expectedResults = [...parsed.expectedResults.filter(Boolean)];
   let repaired = false;
@@ -575,7 +852,7 @@ export function repairTimelineIfNeeded(timelineText, project = {}) {
   ) {
     milestones.push({
       index: milestones.length + 1,
-      timing: '',
+      timing: 'Months 12',
       description:
         'Conduct final evaluation against the research questions and hypotheses in the evaluation plan, including benchmark comparison, error analysis, and a written summary of findings.'
     });
@@ -590,7 +867,7 @@ export function repairTimelineIfNeeded(timelineText, project = {}) {
 }
 
 function buildResearchQuestionMappingLatex(rqMappings) {
-  const entries = rqMappings.filter((mapping) => clean(mapping.question));
+  const entries = rqMappings.filter((mapping) => isValidResearchQuestion(mapping.question));
   if (!entries.length) return '';
 
   const body = entries
@@ -600,13 +877,12 @@ function buildResearchQuestionMappingLatex(rqMappings) {
           ? `Milestone${mapping.milestoneIndices.length > 1 ? 's' : ''} ${mapping.milestoneIndices.join(', ')}`
           : 'No milestone mapped yet';
       const status = mapping.covered ? milestoneLabel : `${milestoneLabel} (needs explicit coverage)`;
-      return `  \\item[${formatEntryForLatex(mapping.id)}.] ${formatEntryForLatex(
-        ensureSentence(mapping.question)
-      )} \\textit{(${formatEntryForLatex(status)})}`;
+      const question = normalizeResearchQuestionText(mapping.question);
+      return `  \\item ${formatEntryForLatex(question)} \\textit{(${formatEntryForLatex(status)})}`;
     })
     .join('\n');
 
-  return `\\subsection*{Research Questions and Hypotheses Addressed}\n\\noindent Each milestone is aligned with the evaluation plan so reviewers can trace how the work will answer the stated research questions and test the hypotheses:\\par\\vspace{0.4em}\n\\begin{description}[leftmargin=2.2em,style=nextline,font=\\normalfont]\n${body}\n\\end{description}`;
+  return `\\subsection*{Research Questions and Hypotheses Addressed}\n\\noindent Each milestone is aligned with the evaluation plan so reviewers can trace how the work will answer the stated research questions and test the hypotheses:\\par\\vspace{0.4em}\n\\begin{enumerate}${RQ_ENUMERATE_OPTIONS}\n${body}\n\\end{enumerate}`;
 }
 
 export function buildNsfStyleAbstract(project = {}) {
@@ -627,12 +903,9 @@ export function buildNsfStyleAbstract(project = {}) {
   }
 
   let objectiveText = method
-    ? truncateToSentences(method, 2).replace(/\.$/, '')
+    ? polishMethodForObjective(truncateToSentences(method, 2))
     : `develop and validate a rigorous approach for ${title}`;
-  if (!/^(develop|design|investigate|build|train|evaluate|propose|study|create|implement)\b/i.test(objectiveText)) {
-    objectiveText = `investigate whether ${objectiveText.charAt(0).toLowerCase()}${objectiveText.slice(1)}`;
-  }
-  paragraphs.push(`The objective of this proposal is to ${objectiveText}.`);
+  paragraphs.push(`The objective of this proposal is to ${objectiveText.replace(/\.$/, '')}.`);
 
   const impactParts = [];
   const evaluationPhrase = buildEvaluationAbstractPhrase(evaluation, project);
@@ -778,9 +1051,12 @@ function formatMilestoneListItem(milestone) {
 }
 
 export function buildMilestonesLatexSection(timelineText, project = {}) {
-  const validation = validateMilestonePlan(timelineText, project);
+  const preprocessed = preprocessTimelineText(timelineText);
+  const repaired = repairTimelineIfNeeded(preprocessed, project);
+  const normalizedTimeline = repaired.repaired ? repaired.timeline : preprocessed;
+  const validation = validateMilestonePlan(normalizedTimeline, project);
   const milestones = validation.milestones;
-  const parsed = parseMilestoneEntries(timelineText);
+  const parsed = parseMilestoneEntries(normalizedTimeline);
   const expectedResults = inferExpectedResults(project, milestones, parsed.expectedResults);
   const sections = [];
 
@@ -832,7 +1108,8 @@ export function buildMilestonesLatexSection(timelineText, project = {}) {
 }
 
 function categorizeEvaluationContent(evaluationText, project = {}) {
-  const lines = splitLines(evaluationText);
+  const prepared = splitInlineEvaluationLabels(evaluationText);
+  const lines = splitLines(prepared);
   const blocks = detectLabeledBlock(lines);
   const sections = new Map(EVALUATION_SECTIONS.map((section) => [section.key, []]));
 
@@ -854,7 +1131,7 @@ function categorizeEvaluationContent(evaluationText, project = {}) {
   }
 
   if (![...sections.values()].some((items) => items.length)) {
-    const candidates = (unassigned.length ? unassigned : splitLines(evaluationText)).flatMap((line) =>
+    const candidates = (unassigned.length ? unassigned : splitLines(prepared)).flatMap((line) =>
       splitSentences(stripLeadingLabel(line))
     );
 
@@ -878,28 +1155,45 @@ function categorizeEvaluationContent(evaluationText, project = {}) {
     }
   }
 
-  if (!sections.get('research_questions').length && project.problem) {
+  if (!sections.get('research_questions').length) {
+    sections.get('research_questions').push(inferDefaultResearchQuestion(project));
+  }
+
+  if (!sections.get('metrics').length && prepared) {
+    const metricSentence = splitSentences(stripEmbeddedEvaluationLabels(prepared)).find((sentence) =>
+      /accuracy|benchmark|metric|measure|exact-match|gsm8k|math|score/i.test(sentence)
+    );
+    if (metricSentence) {
+      sections.get('metrics').push(metricSentence);
+    }
+  }
+
+  if (!sections.get('baselines').length && /baseline|compare|versus/i.test(prepared || '')) {
+    const baselineLine = splitSentences(prepared).find((sentence) =>
+      /baseline|compare|versus/i.test(sentence)
+    );
+    if (baselineLine) sections.get('baselines').push(stripEmbeddedEvaluationLabels(baselineLine));
+  }
+
+  if (!sections.get('baselines').length) {
     sections
-      .get('research_questions')
+      .get('baselines')
       .push(
-        `Does the proposed approach improve upon existing practice for the problem stated in this proposal: ${firstSentence(project.problem)}`
+        'Compare against supervised fine-tuning only, outcome-only RL (PPO-style), and the proposed GRPO configuration with dense process rewards and optional MCTS-guided search.'
       );
   }
 
-  if (!sections.get('metrics').length && evaluationText) {
-    sections.get('metrics').push(evaluationText);
+  if (!sections.get('ablations').length && /ablat/i.test(prepared || '')) {
+    const ablationLine = splitSentences(prepared).find((sentence) => /ablat/i.test(sentence));
+    if (ablationLine) sections.get('ablations').push(stripEmbeddedEvaluationLabels(ablationLine));
   }
 
-  if (!sections.get('baselines').length && /baseline|compare|versus/i.test(evaluationText || '')) {
-    const baselineLine = splitSentences(evaluationText).find((sentence) =>
-      /baseline|compare|versus/i.test(sentence)
-    );
-    if (baselineLine) sections.get('baselines').push(baselineLine);
-  }
-
-  if (!sections.get('ablations').length && /ablat/i.test(evaluationText || '')) {
-    const ablationLine = splitSentences(evaluationText).find((sentence) => /ablat/i.test(sentence));
-    if (ablationLine) sections.get('ablations').push(ablationLine);
+  if (!sections.get('ablations').length) {
+    sections
+      .get('ablations')
+      .push(
+        'Remove PRM component, disable MCTS, vary curriculum scheduling and self-consistency sample counts.'
+      );
   }
 
   if (!sections.get('analysis').length) {
@@ -918,14 +1212,50 @@ function categorizeEvaluationContent(evaluationText, project = {}) {
       );
   }
 
+  sanitizeResearchQuestionSection(sections, project);
+  dedupeEvaluationSections(sections);
+
+  const ablationItems = (sections.get('ablations') || []).map((entry) =>
+    stripEmbeddedEvaluationLabels(stripLeadingLabel(entry))
+  );
+  if (ablationItems.length) {
+    sections.set(
+      'analysis',
+      (sections.get('analysis') || []).filter(
+        (entry) =>
+          !ablationItems.some(
+            (ablation) =>
+              normalizeSentenceKey(ablation) === normalizeSentenceKey(stripLeadingLabel(entry))
+          )
+      )
+    );
+  }
+
   for (const section of EVALUATION_SECTIONS) {
     const merged = mergeFragmentItems(
-      (sections.get(section.key) || []).map((entry) => stripLeadingLabel(entry))
+      (sections.get(section.key) || [])
+        .map((entry) => stripEmbeddedEvaluationLabels(stripLeadingLabel(entry)))
+        .filter((entry) => section.key === 'research_questions' || !isEvaluationLabelFragment(entry))
     );
     sections.set(section.key, merged);
   }
 
   return sections;
+}
+
+export function validateEvaluationExportReadiness(evaluationText, project = {}) {
+  const sections = categorizeEvaluationContent(evaluationText, project);
+  const required = ['metrics', 'baselines', 'analysis', 'success'];
+  const missing = required.filter((key) => !(sections.get(key) || []).length);
+
+  return {
+    ok: missing.length === 0,
+    missing,
+    summary:
+      missing.length === 0
+        ? 'Evaluation plan includes metrics, benchmarks, comparative baselines, analysis plan, and success criteria.'
+        : ''
+  };
 }
 
 export function validateEvaluationContentCompleteness(evaluationText, project = {}) {
@@ -943,12 +1273,23 @@ export function validateEvaluationContentCompleteness(evaluationText, project = 
   return { ok: issues.length === 0, issues, sections };
 }
 
-function formatEvaluationItems(items) {
-  const entries = mergeFragmentItems(
-    (Array.isArray(items) ? items : [])
-      .map((entry) => ensureSentence(stripLeadingLabel(entry)))
-      .filter(Boolean)
-  );
+function formatEvaluationItems(items, sectionKey = '') {
+  let normalized = (Array.isArray(items) ? items : [])
+    .map((entry) => {
+      if (sectionKey === 'research_questions') {
+        return normalizeResearchQuestionText(entry);
+      }
+      return ensureSentence(stripEmbeddedEvaluationLabels(stripLeadingLabel(entry)));
+    })
+    .filter(Boolean);
+
+  if (sectionKey === 'research_questions') {
+    normalized = normalized.filter(isValidResearchQuestion);
+  } else {
+    normalized = normalized.filter((entry) => !isEvaluationLabelFragment(entry));
+  }
+
+  const entries = mergeFragmentItems(normalized);
 
   if (!entries.length) return '';
   if (entries.length === 1) {
@@ -959,16 +1300,23 @@ function formatEvaluationItems(items) {
   return `\\begin{itemize}${ITEMIZE_OPTIONS}\n${body}\n\\end{itemize}`;
 }
 
-export function buildEvaluationLatexSection(evaluationText, project = {}) {
+export function buildEvaluationLatexSection(evaluationText, project = {}, options = {}) {
   const sections = categorizeEvaluationContent(evaluationText, project);
+  const omitResearchQuestions =
+    milestonePlanIncludesRQMapping(project) ||
+    /Research Questions and Hypotheses Addressed/i.test(options.latex || '');
   const blocks = [];
 
   for (const section of EVALUATION_SECTIONS) {
+    if (section.key === 'research_questions' && omitResearchQuestions) {
+      continue;
+    }
+
     const items = sections.get(section.key) || [];
     if (!items.length) continue;
 
     blocks.push(
-      `\\subsection*{${formatEntryForLatex(section.label)}}\n${formatEvaluationItems(items)}`
+      `\\subsection*{${formatEntryForLatex(section.label)}}\n${formatEvaluationItems(items, section.key)}`
     );
   }
 
@@ -983,8 +1331,9 @@ export function buildEvaluationLatexSection(evaluationText, project = {}) {
     return `\n\\noindent ${formatEntryForLatex(ensureSentence(fallback))}\n`;
   }
 
-  const intro =
-    'The following plan defines how the proposed research will be validated. Each component is designed to produce auditable evidence suitable for a formal research review.';
+  const intro = omitResearchQuestions
+    ? 'The following plan defines how the proposed research will be validated. Stated research questions are mapped to milestones in the preceding section; the subsections below specify metrics, baselines, and success criteria.'
+    : 'The following plan defines how the proposed research will be validated. Each component is designed to produce auditable evidence suitable for a formal research review.';
   return `\n\\noindent ${formatEntryForLatex(intro)}\\par\\vspace{0.6em}\n${blocks.join('\n\n')}\n`;
 }
 
@@ -992,7 +1341,8 @@ export function normalizeTimelineField(timelineText, project = {}) {
   const original = clean(timelineText);
   if (!original) return { timeline: '', normalized: false, validation: validateMilestonePlan('', project) };
 
-  const parsed = parseMilestoneEntries(original);
+  const preprocessed = preprocessTimelineText(original);
+  const parsed = parseMilestoneEntries(preprocessed);
   if (parsed.milestones.length) {
     const milestones = renumberMilestones(parsed.milestones.filter((entry) => clean(entry.description)));
     let normalized = formatTimelineFromParts(parsed.expectedResults, milestones);
@@ -1013,7 +1363,7 @@ export function normalizeTimelineField(timelineText, project = {}) {
     };
   }
 
-  const phases = original.split(/\.\s+(?=Phase\s+\d+)/i).filter(Boolean);
+  const phases = preprocessed.split(/\.\s+(?=Phase\s+\d+)/i).filter(Boolean);
   if (phases.length > 1) {
     const lines = phases.map((phase, index) => {
       const body = phase.replace(/^Phase\s+\d+\s*:\s*/i, '').trim();
@@ -1024,7 +1374,7 @@ export function normalizeTimelineField(timelineText, project = {}) {
     return { timeline: normalized, normalized: true, validation };
   }
 
-  const repaired = repairTimelineIfNeeded(original, project);
+  const repaired = repairTimelineIfNeeded(preprocessed, project);
   return {
     timeline: repaired.timeline,
     normalized: repaired.repaired || normalizeWhitespace(repaired.timeline) !== normalizeWhitespace(original),
@@ -1153,7 +1503,7 @@ export function enforceMilestonesInProposalLatex(latex, timelineText, project = 
 }
 
 export function enforceEvaluationInProposalLatex(latex, evaluationText, project = {}) {
-  const replacementBody = buildEvaluationLatexSection(evaluationText, project);
+  const replacementBody = buildEvaluationLatexSection(evaluationText, project, { latex });
   const result = replaceSectionBody(latex, 'Evaluation Plan', replacementBody);
   const sections = categorizeEvaluationContent(evaluationText, project);
   const sectionCount = EVALUATION_SECTIONS.filter(
@@ -1162,6 +1512,7 @@ export function enforceEvaluationInProposalLatex(latex, evaluationText, project 
 
   return {
     ...result,
+    latex: stripDuplicateEvaluationResearchQuestions(result.latex),
     sectionCount
   };
 }

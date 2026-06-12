@@ -248,9 +248,14 @@ export function auditLatexStructure(latex) {
   };
 }
 
+export function repairMissingSectionBreaks(latex) {
+  return String(latex || '').replace(/([.!?])(\\section\*?\{)/g, '$1\n\n$2');
+}
+
 export function repairStructuralLatex(latex, options = {}) {
   const author = options.author || PROPOSAL_AUTHOR;
   let next = normalizeUnicodeForLatex(latex);
+  next = repairMissingSectionBreaks(next);
   next = repairEscapedStarSectionHeadings(next);
   next = repairDuplicateDocumentMarkers(next);
   next = repairStrayPreambleCommands(next);

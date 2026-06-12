@@ -8,8 +8,10 @@ import {
   enforceAbstractInProposalLatex,
   enforceEvaluationInProposalLatex,
   enforceMilestonesInProposalLatex,
+  extractResearchQuestionsAndHypotheses,
   normalizeEvaluationField,
   normalizeTimelineField,
+  stripDuplicateEvaluationResearchQuestions,
   validateEvaluationContentCompleteness,
   validateMilestonePlan
 } from '../server/proposalSections.js';
@@ -46,7 +48,12 @@ assert.match(milestonesLatex, /\\textbf\{Weeks 1--3\.\}/);
 assert.match(milestonesLatex, /Research Questions and Hypotheses Addressed/);
 
 const evaluationLatex = buildEvaluationLatexSection(normalizedEvaluation.evaluation, project);
-assert.match(evaluationLatex, /Research Questions and Hypotheses/);
+assert.doesNotMatch(
+  evaluationLatex,
+  /\\subsection\*\{Research Questions and Hypotheses\}/,
+  'RQ subsection should appear only in milestones when milestone mapping exists'
+);
+assert.match(evaluationLatex, /mapped to milestones in the preceding section/i);
 assert.match(evaluationLatex, /Metrics and Benchmarks/);
 assert.match(evaluationLatex, /Comparative Baselines/);
 assert.match(evaluationLatex, /Success Criteria/);
@@ -63,6 +70,71 @@ assert.doesNotMatch(egLatex, /\\item g\./);
 
 const egCompleteness = validateEvaluationContentCompleteness(egEvaluation, project);
 assert.equal(egCompleteness.ok, true, egCompleteness.issues.join('; '));
+
+const messyTimeline =
+  'Expected results: (1) A trained process reward model with >90% agreement with human annotators. (2) An LLM policy that improves by 10--20% absolute accuracy on GSM8K and MATH. Milestone 1 (Months 1--2): Literature review and dataset curation. Milestone 2 (Months 2--4): Process reward model development. Milestone 3 (Months 4--6): Search and planning integration with MCTS.';
+
+const messyMilestonesLatex = buildMilestonesLatexSection(messyTimeline, project);
+assert.match(messyMilestonesLatex, /\\begin\{enumerate\}/);
+assert.ok(
+  (messyMilestonesLatex.match(/\\item \\textbf\{Months/g) || []).length >= 2,
+  'inline milestones should become separate enumerated items'
+);
+assert.ok(
+  messyMilestonesLatex.split('\\item').length >= 5,
+  'expected results and milestones should not collapse into one bullet'
+);
+
+const messyEvaluation =
+  'Research Questions and Hypotheses: Does dense process reward improve exact-match accuracy? Metrics and Benchmarks: Evaluate on GSM8K, MATH, AMC, and AIME. Comparative Baselines: Compare against supervised fine-tuning and outcome-only RL.';
+
+const messyEvalLatex = buildEvaluationLatexSection(messyEvaluation, { ...project, timeline: '' });
+assert.match(messyEvalLatex, /dense process reward/i);
+assert.match(messyEvalLatex, /\\subsection\*\{Research Questions and Hypotheses\}/);
+assert.match(messyEvalLatex, /GSM8K|MATH/);
+assert.doesNotMatch(
+  messyEvalLatex,
+  /Research Questions and Hypotheses:[\s\S]*Research Questions and Hypotheses:/
+);
+
+const grpoProject = {
+  ...project,
+  method:
+    'We will use Group Relative Policy Optimization (GRPO) for policy updates and Monte Carlo Tree Search (MCTS) for reasoning path exploration, guided by a process reward model.'
+};
+const grpoAbstract = buildNsfStyleAbstract(grpoProject);
+assert.doesNotMatch(grpoAbstract, /investigate whether we will/i, grpoAbstract);
+assert.match(grpoAbstract, /GRPO|Group Relative Policy Optimization|MCTS/i);
+
+const rqEvaluation =
+  'Research Questions and Hypotheses: RQ1: Does process-based RL improve accuracy? RQ2: Metrics and Benchmarks: Evaluate on GSM8K. Metrics and Benchmarks: Exact-match on GSM8K and MATH.';
+const rqItems = extractResearchQuestionsAndHypotheses(rqEvaluation, project);
+assert.equal(rqItems.length, 1, `invalid evaluation labels should not become RQs: ${JSON.stringify(rqItems)}`);
+assert.match(rqItems[0], /process-based RL/i);
+
+const rqMilestonesLatex = buildMilestonesLatexSection(normalizedTimeline.timeline, {
+  ...project,
+  evaluation: rqEvaluation
+});
+assert.match(rqMilestonesLatex, /\\begin\{enumerate\}\[label=\\textbf\{RQ\\arabic\*\.\}/);
+assert.doesNotMatch(rqMilestonesLatex, /\\item\[RQ1\.\]/);
+assert.doesNotMatch(rqMilestonesLatex, /RQ1:\s*RQ1:/i);
+assert.doesNotMatch(rqMilestonesLatex, /Metrics and\./i);
+
+const duplicateRqLatex = String.raw`\section{Expected Results and Research Milestones}
+\subsection*{Research Questions and Hypotheses Addressed}
+\begin{enumerate}
+\item Does process-based RL improve accuracy?
+\end{enumerate}
+\section{Evaluation Plan}
+\subsection*{Research Questions and Hypotheses}
+Does process-based RL improve accuracy?
+\subsection*{Metrics and Benchmarks}
+GSM8K accuracy.`;
+
+const strippedRqLatex = stripDuplicateEvaluationResearchQuestions(duplicateRqLatex);
+assert.doesNotMatch(strippedRqLatex, /\\subsection\*\{Research Questions and Hypotheses\}/);
+assert.match(strippedRqLatex, /Metrics and Benchmarks/);
 
 let document = `\\PassOptionsToPackage{hyphens}{url}
 \\documentclass[11pt]{article}

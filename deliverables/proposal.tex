@@ -5,8 +5,12 @@
 \urlstyle{same}
 \setlength{\emergencystretch}{3em}
 \usepackage{enumitem}
+\usepackage[round,authoryear]{natbib}
 \setlist[itemize]{leftmargin=*,itemsep=0.35em,parsep=0pt,topsep=0.35em,partopsep=0pt}
 \setlist{nosep}
+\usepackage{float}
+\usepackage{etoolbox}
+\AtBeginEnvironment{abstract}{\normalfont\normalsize}
 \title{Process-Based Reinforcement Learning with Step-Level Rewards for Mathematical Reasoning in Language Models}
 \author{Aamir Khan}
 \date{}
@@ -15,20 +19,19 @@
 \maketitle
 
 \section*{Abstract}
-Existing reinforcement learning (RL) methods for mathematical reasoning in large language models (LLMs) rely predominantly on sparse outcome-based rewards--binary signals indicating only whether a final answer is correct or incorrect. This approach suffers from three critical limitations: (1) it provides no guidance on where or why a reasoning chain fails, making error diagnosis and targeted improvement difficult; (2) it yields low sample efficiency, as models receive no credit for partially correct intermediate steps; and (3) it hinders generalization to harder problems, where success depends on coherent multi-step reasoning rather than final-answer matching.
+Existing reinforcement learning (RL) methods for mathematical reasoning in large language models (LLMs) rely predominantly on sparse outcome-based rewards--binary signals indicating only whether a final answer is correct or incorrect, building on prior work \citep{lightman2023, wang2023}.  This approach suffers from three critical limitations: (1) it provides no guidance on where or why a reasoning chain fails, making error diagnosis and targeted improvement difficult; (2) it yields low sample efficiency, as models receive no credit for partially correct intermediate steps; and (3) it hinders generalization to harder problems, where success depends on coherent multi-step reasoning rather than final-answer matching.
 
-The objective of this proposal is to investigate whether we will use Group Relative Policy Optimization (GRPO) as the core policy update mechanism, leveraging its ability to stabilize training by comparing multiple sampled reasoning trajectories within each update group. Step-level rewards will be provided by a process reward model (PRM) trained on human-annotated and synthetic step-level correctness labels, augmented by an LLM-as-judge that evaluates the logical coherence and mathematical validity of each reasoning step.
+The objective of this proposal is to employ Group Relative Policy Optimization (GRPO) as the core policy update mechanism, leveraging its ability to stabilize training by comparing multiple sampled reasoning trajectories within each update group.  Step-level rewards will be provided by a process reward model (PRM) trained on human-annotated and synthetic step-level correctness labels, augmented by an LLM-as-judge that evaluates the logical coherence and mathematical validity of each reasoning step.
 
-Success will be assessed through Metrics and Benchmarks: We will evaluate our RL environment against the GSM 8K and math benchmarks Comparative Baselines: We will evaluate our RL environment against the GSM 8K and math benchmarks Analysis Plan: Report quantitative results with clear experimental protocols, logged hyperparameters, and error analysis to distinguish implementation issues from scientific conclusions. Findings will be documented with reproducible artifacts, explicit assumptions, and clear criteria for interpreting empirical outcomes.
-
+Success will be assessed through evaluation on our RL environment against the GSM 8K and math.  The work is organized into 7 staged milestones with concrete deliverables and timeline estimates.  Findings will be documented with reproducible artifacts, explicit assumptions, and clear criteria for interpreting empirical outcomes.
 \section{Motivation and Gap}
-Existing reinforcement learning (RL) methods for mathematical reasoning in large language models (LLMs) rely predominantly on sparse outcome-based rewards--binary signals indicating only whether a final answer is correct or incorrect. This approach suffers from three critical limitations: (1) it provides no guidance on where or why a reasoning chain fails, making error diagnosis and targeted improvement difficult; (2) it yields low sample efficiency, as models receive no credit for partially correct intermediate steps; and (3) it hinders generalization to harder problems, where success depends on coherent multi-step reasoning rather than final-answer matching. While recent work has explored process reward models (PRMs) to provide step-level feedback, these efforts remain fragmented--often relying on limited human annotations, synthetic data of uncertain quality, or integration with suboptimal search strategies. Crucially, there is no systematic framework for combining dense, step-level process rewards with scalable policy optimization (e.g., Group Relative Policy Optimization) and structured reasoning path exploration (e.g., Monte Carlo Tree Search) to jointly improve both the reliability and interpretability of mathematical reasoning in LLMs. This project addresses that gap by developing a unified process-based RL pipeline that leverages high-quality, human-annotated step-level data to train a robust PRM, which then guides both search during inference and policy updates during training. The result will be a more efficient, diagnosable, and generalizable approach to mathematical reasoning--one that moves beyond outcome-only supervision to explicitly reward and refine the reasoning process itself.
+Existing reinforcement learning (RL) methods for mathematical reasoning in large language models (LLMs) rely predominantly on sparse outcome-based rewards--binary signals indicating only whether a final answer is correct or incorrect, building on prior work \citep{lightman2023, wang2023, openai2023}.  This approach suffers from three critical limitations: (1) it provides no guidance on where or why a reasoning chain fails, making error diagnosis and targeted improvement difficult; (2) it yields low sample efficiency, as models receive no credit for partially correct intermediate steps; and (3) it hinders generalization to harder problems, where success depends on coherent multi-step reasoning rather than final-answer matching.  While recent work has explored process reward models (PRMs) to provide step-level feedback, these efforts remain fragmented--often relying on limited human annotations, synthetic data of uncertain quality, or integration with suboptimal search strategies.  Crucially, there is no systematic framework for combining dense, step-level process rewards with scalable policy optimization (e. g. , Group Relative Policy Optimization) and structured reasoning path exploration (e. g. , Monte Carlo Tree Search) to jointly improve both the reliability and interpretability of mathematical reasoning in LLMs.  This project addresses that gap by developing a unified process-based RL pipeline that leverages high-quality, human-annotated step-level data to train a robust PRM, which then guides both search during inference and policy updates during training.  The result will be a more efficient, diagnosable, and generalizable approach to mathematical reasoning--one that moves beyond outcome-only supervision to explicitly reward and refine the reasoning process itself.  Existing RL methods for math reasoning rely on sparse outcome rewards, which limit learning efficiency and provide little insight into model failures.  This makes it difficult to improve reliability, diagnose errors, and generalize to harder problems.  Process-based RL can address these issues by providing dense, step-level feedback.
 
 \section{Project Goal}
 Show that a process-reward RL stack with curriculum learning and self-consistency can improve exact-match accuracy on math word problems relative to supervised fine-tuning alone, while remaining more stable than naive PPO training.
 
 \section{Method and Training Workflow}
-We will use Group Relative Policy Optimization (GRPO) as the core policy update mechanism, leveraging its ability to stabilize training by comparing multiple sampled reasoning trajectories within each update group. Step-level rewards will be provided by a process reward model (PRM) trained on human-annotated and synthetic step-level correctness labels, augmented by an LLM-as-judge that evaluates the logical coherence and mathematical validity of each reasoning step. During inference, Monte Carlo Tree Search (MCTS) will explore candidate reasoning paths, using the PRM and LLM-as-judge scores as node evaluation signals to guide expansion and selection. The policy will be updated via GRPO using dense process rewards from the PRM and judge, combined with sparse outcome rewards, enabling fine-grained credit assignment across reasoning steps. This integrated pipeline ensures that both training and inference are guided by high-quality, interpretable step-level feedback, improving sample efficiency, error diagnostication, and generalization to complex multi-step problems.
+We will use Group Relative Policy Optimization (GRPO) as the core policy update mechanism, leveraging its ability to stabilize training by comparing multiple sampled reasoning trajectories within each update group. Step-level rewards will be provided by a process reward model (PRM) trained on human-annotated and synthetic step-level correctness labels, augmented by an LLM-as-judge that evaluates the logical coherence and mathematical validity of each reasoning step. During inference, Monte Carlo Tree Search (MCTS) will explore candidate reasoning paths, using the PRM and LLM-as-judge scores as node evaluation signals to guide expansion and selection. The policy will be updated via GRPO using dense process rewards from the PRM and judge, combined with sparse outcome rewards, enabling fine-grained credit assignment across reasoning steps. This integrated pipeline ensures that both training and inference are guided by high-quality, interpretable step-level feedback, improving sample efficiency, error diagnostication, and generalization to complex multi-step problems. We will use GRPO (Group Relative Policy Optimization) for policy updates and Monte Carlo Tree Search (MCTS) for reasoning path exploration, guided by a process reward model trained on human-annotated and synthetic step-level data.
 
 \begin{enumerate}
 \item Prepare a math reasoning dataset and fine-tune an open instruction-tuned model with a supervised baseline.
@@ -39,7 +42,7 @@ We will use Group Relative Policy Optimization (GRPO) as the core policy update 
 \end{enumerate}
 
 \section{Figure}
-\begin{figure}[h]
+\begin{figure}[H]
 \centering
 \fbox{%
   \begin{minipage}{0.94\linewidth}
@@ -47,25 +50,31 @@ We will use Group Relative Policy Optimization (GRPO) as the core policy update 
   \footnotesize
   \setlength{\fboxsep}{5pt}
   \textbf{Process-Based RL Agent Workflow}\\[0.55em]
-  \fbox{\parbox{0.88\linewidth}{\centering\small GRPO policy optimization}}
+  \fbox{\parbox{0.88\linewidth}{\centering\small Prepare a math reasoning \\ dataset and fine-tune an}}
 
 \vspace{0.35em}
 {\centering $\downarrow$ \par}
 \vspace{0.25em}
 
-\fbox{\parbox{0.88\linewidth}{\centering\small Monte Carlo Tree Search}}
+\fbox{\parbox{0.88\linewidth}{\centering\small Score rollouts with dense \\ rewards for reasoning}}
 
 \vspace{0.35em}
 {\centering $\downarrow$ \par}
 \vspace{0.25em}
 
-\fbox{\parbox{0.88\linewidth}{\centering\small Process reward model}}
+\fbox{\parbox{0.88\linewidth}{\centering\small GRPO policy optimization}}
 
 \vspace{0.35em}
 {\centering $\downarrow$ \par}
 \vspace{0.25em}
 
-\fbox{\parbox{0.88\linewidth}{\centering\small Policy optimization}}
+\fbox{\parbox{0.88\linewidth}{\centering\small Self-consistency voting}}
+
+\vspace{0.35em}
+{\centering $\downarrow$ \par}
+\vspace{0.25em}
+
+\fbox{\parbox{0.88\linewidth}{\centering\small Benchmark evaluation}}
   \vspace{0.45em}
 
 {\centering\parbox{0.9\linewidth}{\centering\itshape (Iterative training loop until convergence)} \par}
@@ -73,40 +82,49 @@ We will use Group Relative Policy Optimization (GRPO) as the core policy update 
 }
 \caption{Process-based RL agent workflow for Process-Based Reinforcement Learning with Step-Level Rewards for Mathematical: reasoning-step generation, process reward scoring, MCTS exploration, and GRPO policy updates.}
 \end{figure}
-
 \section{Expected Results and Research Milestones}
-
 \subsection*{Expected Results}
 \noindent The proposed work will produce the following tangible outcomes:\par\vspace{0.4em}
 \begin{itemize}[leftmargin=*,itemsep=0.35em,parsep=0pt,topsep=0.35em,partopsep=0pt]
-  \item (1) A trained process reward model that predicts step-level correctness with >90\% agreement with human annotators on held-out math problems. (2) An LLM policy that improves by 10--20\% absolute accuracy on GSM8K and MATH benchmarks compared to outcome-only RL baselines. (3) Qualitative improvements in reasoning coherence, with fewer logical jumps and more verifiable intermediate steps. (4) Public release of a process-annotated dataset and evaluation harness. Milestone 1 (Months 1--2): Literature review and dataset curation. Assemble and annotate a process-level math reasoning dataset (e.g., from GSM8K, MATH, AoPS) with step-level labels; define annotation guidelines and quality controls Milestone 2 (Months 2--4): Process reward model development. Train and evaluate PRM variants (classification, regression, and ranking heads); perform ablation on annotation sources and training regimes; select best PRM for downstream RL Milestone 3 (Months 4--6): Search and planning integration. Implement tree-based reasoning search (beam/MCTS) using PRM and value head; benchmark search efficiency and solution quality against standard decoding Milestone 4 (Months 6--9): Policy optimization and curriculum learning. Train LLM policies with PBRL using process + outcome rewards; implement curriculum from easy to hard problems; compare to outcome-only RL and supervised fine-tuning baselines Milestone 5 (Months 9--11): Evaluation and analysis. Conduct comprehensive evaluation on in-distribution and out-of-distribution math benchmarks; perform error analysis and ablation studies; assess generalization to competition-level problems Milestone 6 (Months 11--12): Dissemination and release. Prepare manuscript, release code, PRM weights, and process-annotated dataset; document risks, limitations, and future directions Milestone 7: Conduct final evaluation against the research questions and hypotheses in the evaluation plan, including benchmark comparison, error analysis, and a written summary of findings.
+  \item A trained process reward model that predicts step-level correctness with >90\% agreement with human annotators on held-out math problems.
+  \item An LLM policy that improves by 10--20\% absolute accuracy on GSM8K and MATH benchmarks compared to outcome-only RL baselines.
+  \item Qualitative improvements in reasoning coherence, with fewer logical jumps and more verifiable intermediate steps.
+  \item Public release of a process-annotated dataset and evaluation harness.
 \end{itemize}
 
 \subsection*{Research Milestones and Timeline}
-\begin{itemize}[leftmargin=*,itemsep=0.35em,parsep=0pt,topsep=0.35em,partopsep=0pt]
-  \item Expected results: (1) A trained process reward model that predicts step-level correctness with >90\% agreement with human annotators on held-out math problems. (2) An LLM policy that improves by 10--20\% absolute accuracy on GSM8K and MATH benchmarks compared to outcome-only RL baselines. (3) Qualitative improvements in reasoning coherence, with fewer logical jumps and more verifiable intermediate steps. (4) Public release of a process-annotated dataset and evaluation harness. Milestone 1 (Months 1--2): Literature review and dataset curation. Assemble and annotate a process-level math reasoning dataset (e.g., from GSM8K, MATH, AoPS) with step-level labels; define annotation guidelines and quality controls Milestone 2 (Months 2--4): Process reward model development. Train and evaluate PRM variants (classification, regression, and ranking heads); perform ablation on annotation sources and training regimes; select best PRM for downstream RL Milestone 3 (Months 4--6): Search and planning integration. Implement tree-based reasoning search (beam/MCTS) using PRM and value head; benchmark search efficiency and solution quality against standard decoding Milestone 4 (Months 6--9): Policy optimization and curriculum learning. Train LLM policies with PBRL using process + outcome rewards; implement curriculum from easy to hard problems; compare to outcome-only RL and supervised fine-tuning baselines Milestone 5 (Months 9--11): Evaluation and analysis. Conduct comprehensive evaluation on in-distribution and out-of-distribution math benchmarks; perform error analysis and ablation studies; assess generalization to competition-level problems Milestone 6 (Months 11--12): Dissemination and release. Prepare manuscript, release code, PRM weights, and process-annotated dataset; document risks, limitations, and future directions Milestone 7: Conduct final evaluation against the research questions and hypotheses in the evaluation plan, including benchmark comparison, error analysis, and a written summary of findings.
-\end{itemize}
+\noindent The project schedule is organized into 7 milestones with verifiable deliverables, timeline estimates, and explicit alignment to the evaluation plan:\par\vspace{0.4em}
+\begin{enumerate}[leftmargin=*,itemsep=0.35em,parsep=0pt,topsep=0.35em,partopsep=0pt]
+  \item \textbf{Months 1--2.} Literature review and dataset curation. Assemble and annotate a process-level math reasoning dataset (e.g., from GSM8K, MATH, AoPS) with step-level labels; define annotation guidelines and quality controls.
+  \item \textbf{Months 2--4.} Process reward model development. Train and evaluate PRM variants (classification, regression, and ranking heads); perform ablation on annotation sources and training regimes; select best PRM for downstream RL.
+  \item \textbf{Months 4--6.} Search and planning integration. Implement tree-based reasoning search (beam/MCTS) using PRM and value head; benchmark search efficiency and solution quality against standard decoding.
+  \item \textbf{Months 6--9.} Policy optimization and curriculum learning. Train LLM policies with PBRL using process + outcome rewards; implement curriculum from easy to hard problems; compare to outcome-only RL and supervised fine-tuning baselines.
+  \item \textbf{Months 9--11.} Evaluation and analysis. Conduct comprehensive evaluation on in-distribution and out-of-distribution math benchmarks; perform error analysis and ablation studies; assess generalization to competition-level problems.
+  \item \textbf{Months 11--12.} Dissemination and release. Prepare manuscript, release code, PRM weights, and process-annotated dataset; document risks, limitations, and future directions.
+  \item \textbf{Months 12.} Conduct final evaluation against the research questions and hypotheses in the evaluation plan, including benchmark comparison, error analysis, and a written summary of findings.
+\end{enumerate}
 
-
+\subsection*{Research Questions and Hypotheses Addressed}
+\noindent Each milestone is aligned with the evaluation plan so reviewers can trace how the work will answer the stated research questions and test the hypotheses:\par\vspace{0.4em}
+\begin{enumerate}[label=\textbf{RQ\arabic*.},leftmargin=2.4em,itemsep=0.35em,parsep=0pt,topsep=0.35em]
+  \item Does process-based reinforcement learning with dense step-level rewards improve multi-step mathematical reasoning accuracy relative to supervised fine-tuning and outcome-only RL baselines? \textit{(Milestones 1, 4)}
+\end{enumerate}
 \section{Evaluation Plan}
-
-\noindent The following plan defines how the proposed research will be validated. Each component is designed to produce auditable evidence suitable for a formal research review.\par\vspace{0.6em}
-\subsection*{Research Questions and Hypotheses}
-Does the proposed approach improve upon existing practice for the problem stated in this proposal: Existing reinforcement learning (RL) methods for mathematical reasoning in large language models (LLMs) rely predominantly on sparse outcome-based rewards--binary signals indicating only whether a final answer is correct or incorrect. Metrics and Benchmarks: We will evaluate our RL environment against the GSM 8K and math benchmarks Comparative Baselines: We will evaluate our RL environment against the GSM 8K and math benchmarks Analysis Plan: Report quantitative results with clear experimental protocols, logged hyperparameters, and error analysis to distinguish implementation issues from scientific conclusions. Success Criteria: Demonstrate measurable improvement over credible baselines with stable training behavior and reproducible scripts sufficient for independent verification.
-
+\noindent The following plan defines how the proposed research will be validated. Stated research questions are mapped to milestones in the preceding section; the subsections below specify metrics, baselines, and success criteria.\par\vspace{0.6em}
 \subsection*{Metrics and Benchmarks}
-Does the proposed approach improve upon existing practice for the problem stated in this proposal: Existing reinforcement learning (RL) methods for mathematical reasoning in large language models (LLMs) rely predominantly on sparse outcome-based rewards--binary signals indicating only whether a final answer is correct or incorrect. Metrics and Benchmarks: We will evaluate our RL environment against the GSM 8K and math benchmarks Comparative Baselines: We will evaluate our RL environment against the GSM 8K and math benchmarks Analysis Plan: Report quantitative results with clear experimental protocols, logged hyperparameters, and error analysis to distinguish implementation issues from scientific conclusions. Success Criteria: Demonstrate measurable improvement over credible baselines with stable training behavior and reproducible scripts sufficient for independent verification.
+We will evaluate our RL environment against the GSM 8K and math.
 
-\subsection*{Comparative Baselines}
-We will evaluate our RL environment against the GSM 8K and math benchmarks Comparative Baselines: We will evaluate our RL environment against the GSM 8K and math benchmarks Analysis Plan: Report quantitative results with clear experimental protocols, logged hyperparameters, and error analysis to distinguish implementation issues from scientific conclusions.
+\subsection*{Ablations and Sensitivity Analysis}
+We will evaluate our RL environment against the GSM 8K and math Remove PRM component, disable MCTS, vary curriculum scheduling and self-consistency sample counts.
 
 \subsection*{Analysis Plan}
-Report quantitative results with clear experimental protocols, logged hyperparameters, and error analysis to distinguish implementation issues from scientific conclusions.
+\begin{itemize}[leftmargin=*,itemsep=0.35em,parsep=0pt,topsep=0.35em,partopsep=0pt]
+  \item Remove PRM component, disable MCTS, vary curriculum scheduling and self-consistency sample counts.
+  \item Report quantitative results with clear experimental protocols, logged hyperparameters, and error analysis to distinguish implementation issues from scientific conclusions.
+\end{itemize}
 
 \subsection*{Success Criteria}
 Demonstrate measurable improvement over credible baselines with stable training behavior and reproducible scripts sufficient for independent verification.
-
-
 \section{Risks and Mitigation}
 \begin{itemize}
 \item PPO instability or collapse: prefer GRPO updates and monitor KL drift.
@@ -116,21 +134,17 @@ Demonstrate measurable improvement over credible baselines with stable training 
 \end{itemize}
 
 \section{Resources}
-
 \noindent The following resources are required to execute the proposed research. The project scope is designed to remain feasible within available course and institutional support.\par\vspace{0.6em}
 \subsection*{Data and Model Artifacts}
 \begin{itemize}[leftmargin=*,itemsep=0.35em,parsep=0pt,topsep=0.35em,partopsep=0pt]
   \item Budget for 2--3 part-time human annotators for 3--4 months to label \textasciitilde{}10k reasoning trajectories with step-level correctness.
 \end{itemize}
-
-
 \section{References and Assumptions}
-
-\begin{itemize}[leftmargin=*,itemsep=0.35em,parsep=0pt,topsep=0.35em,partopsep=0pt]
-  \item Lightman, H., et al. (2023). 'Let's Verify Step by Step.' arXiv:2305.20050.
-  \item Wang, X., et al. (2023). 'Math-Shepherd: Verify and Reinforce LLMs Step-by-step without Human Annotations.' arXiv:2312.08935.
-  \item OpenAI (2023). 'GPT-4 Technical Report.' arXiv:2303.08774.
-  \item Cobbe, K., et al. (2021). 'Training Verifiers to Solve Math Word Problems.' arXiv:2110.14168.
-  \item Wei, J., et al. (2022). 'Chain-of-Thought Prompting Elicits Reasoning in Large Language Models.' NeurIPS 2022.
-\end{itemize}
+\begin{thebibliography}{9}
+  \bibitem[Lightman, H., et al., 2023]{lightman2023} \citep{lightman2023}. \emph{'Let's Verify Step by Step.' arXiv:2305.20050}.
+  \bibitem[Wang, X., et al., 2023]{wang2023} \citep{wang2023}. \emph{'Math-Shepherd: Verify and Reinforce LLMs Step-by-step without Human Annotations.' arXiv:2312.08935}.
+  \bibitem[OpenAI, 2023]{openai2023} \citep{openai2023}. \emph{'GPT-4 Technical Report.' arXiv:2303.08774}.
+  \bibitem[Cobbe, K., et al., 2021]{cobbe2021} \citep{cobbe2021}. \emph{'Training Verifiers to Solve Math Word Problems.' arXiv:2110.14168}.
+  \bibitem[Wei, J., et al., 2022]{wei2022} \citep{wei2022}. \emph{'Chain-of-Thought Prompting Elicits Reasoning in Large Language Models.' NeurIPS 2022}.
+\end{thebibliography}
 \end{document}

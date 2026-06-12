@@ -33,6 +33,7 @@ export const LAYOUT_PREAMBLE_LINES = [
   '\\PassOptionsToPackage{hyphens}{url}',
   '\\urlstyle{same}',
   '\\setlength{\\emergencystretch}{3em}',
+  '\\usepackage{float}',
   '\\usepackage{enumitem}',
   '\\usepackage{etoolbox}',
   '\\AtBeginEnvironment{abstract}{\\normalfont\\normalsize}',
@@ -66,6 +67,10 @@ export function ensureLayoutPreamble(latex) {
     },
     { test: /\\urlstyle\{same\}/, line: '\\urlstyle{same}' },
     { test: /\\emergencystretch/, line: '\\setlength{\\emergencystretch}{3em}' },
+    {
+      test: /\\usepackage(?:\[[^\]]*\])?\{float\}/,
+      line: '\\usepackage{float}'
+    },
     {
       test: /\\usepackage(?:\[[^\]]*\])?\{enumitem\}/,
       line: '\\usepackage{enumitem}'

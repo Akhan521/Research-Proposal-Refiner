@@ -218,4 +218,28 @@ assert.match(
 );
 assert.equal(processRlFigure.validation.renderedContent.ok, true);
 
+const emptyFigureSectionDoc = String.raw`\documentclass{article}
+\usepackage{float}
+\begin{document}
+\section{Method and Training Workflow}
+Train a model with dense rewards and evaluate on benchmarks.
+\begin{figure}[h]
+\centering
+\fbox{old diagram}
+\caption{Old misplaced diagram}
+\end{figure}
+\section{Figure}
+
+\section{Expected Results and Research Milestones}
+Milestone content.
+\end{document}`;
+
+const consolidated = enforceFiguresInProposalLatex(emptyFigureSectionDoc, processRlProject);
+assert.match(consolidated.latex, /\\section\{Figure\}[\s\S]*\\begin\{figure\}\[H\]/i);
+const methodSectionBody =
+  consolidated.latex.match(
+    /\\section\{Method and Training Workflow\}([\s\S]*?)\\section\{Figure\}/i
+  )?.[1] || '';
+assert.doesNotMatch(methodSectionBody, /\\begin\{figure\}/, 'figure should not remain in the Method section');
+
 console.log('PASS NSF-style workflow diagram generation and validation');

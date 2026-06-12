@@ -1020,10 +1020,11 @@ export function buildProjectWorkflowFigure(project = {}, options = {}) {
   });
   const finalSteps = validation.steps || steps;
   const grounding = validateDiagramGrounding(finalSteps, project, { source: inference.source });
+  const placement = options.placement || '[H]';
   const replacement = buildFigureEnvironment(
     finalSteps,
     validation.content?.caption || meta.caption,
-    '[h]',
+    placement,
     {
       layout: validation.layout,
       title: validation.content?.title || meta.title,
@@ -1367,18 +1368,55 @@ function replaceFigureBlock(block, project, options = {}) {
   };
 }
 
-function replaceSectionFigure(latex, project, options = {}) {
-  const pattern =
-    /(\\section\*?\{Figure[^}]*\})([\s\S]*?)(?=\\section\*?\{|\\end\{document\})/i;
+const FIGURE_SECTION_PATTERN =
+  /(\\section\*?\{Figure[^}]*\})([\s\S]*?)(?=\\section\*?\{|\\end\{document\})/i;
 
-  if (!pattern.test(latex)) {
+function getFigureSectionRange(latex) {
+  const match = FIGURE_SECTION_PATTERN.exec(String(latex || ''));
+  if (!match) return null;
+
+  return {
+    start: match.index,
+    end: match.index + match[0].length
+  };
+}
+
+function removeExternalFigureBlocks(latex) {
+  const range = getFigureSectionRange(latex);
+  if (!range) return latex;
+
+  let result = '';
+  let cursor = 0;
+  const pattern = /\\begin\{figure\}(\[[^\]]*\])?[\s\S]*?\\end\{figure\}/gi;
+  let match;
+
+  while ((match = pattern.exec(latex)) !== null) {
+    result += latex.slice(cursor, match.index);
+    const insideFigureSection = match.index >= range.start && match.index < range.end;
+    if (insideFigureSection) {
+      result += match[0];
+    }
+    cursor = match.index + match[0].length;
+  }
+
+  result += latex.slice(cursor);
+  return result;
+}
+
+function replaceSectionFigure(latex, project, options = {}) {
+  if (!FIGURE_SECTION_PATTERN.test(latex)) {
     return { latex, replaced: false, validations: [] };
   }
 
-  const built = buildProjectWorkflowFigure(project, options);
+  const built = buildProjectWorkflowFigure(project, { ...options, placement: '[H]' });
+  let next = latex.replace(
+    FIGURE_SECTION_PATTERN,
+    (full, heading) => `${heading}\n${built.replacement}\n`
+  );
+  next = removeExternalFigureBlocks(next);
 
   return {
-    latex: latex.replace(pattern, (full, heading) => `${heading}\n${built.replacement}\n`),
+    latex: next,
     replaced: true,
     validations: [built.validation]
   };
@@ -1494,22 +1532,26 @@ export function appendDiagramValidationNote(report, figureEnforcement = {}) {
 
 export function enforceFiguresInProposalLatex(latex, project = {}) {
   const source = String(latex || '');
-  const blocks = extractFigureBlocks(source);
-
   const diagramOptions = { latex: source };
 
-  if (!blocks.length) {
+  if (FIGURE_SECTION_PATTERN.test(source)) {
     const sectionResult = replaceSectionFigure(source, project, diagramOptions);
-    if (sectionResult.replaced) {
-      return {
-        latex: sectionResult.latex,
-        replaced: 1,
-        validations: sectionResult.validations || [],
-        injected: false
-      };
-    }
+    return {
+      latex: sectionResult.latex,
+      replaced: sectionResult.replaced ? 1 : 0,
+      validations: sectionResult.validations || [],
+      injected: false,
+      consolidated: true
+    };
+  }
 
-    const injected = injectWorkflowFigureAfterMethod(sectionResult.latex || source, project, diagramOptions);
+  const blocks = extractFigureBlocks(source);
+
+  if (!blocks.length) {
+    const injected = injectWorkflowFigureAfterMethod(source, project, {
+      ...diagramOptions,
+      placement: '[H]'
+    });
     return {
       latex: injected.latex,
       replaced: injected.replaced,
@@ -1526,7 +1568,7 @@ export function enforceFiguresInProposalLatex(latex, project = {}) {
   for (const block of blocks) {
     rebuilt += source.slice(cursor, block.start);
     const next = replaceFigureBlock(block, project, diagramOptions);
-    rebuilt += next.replacement;
+    rebuilt += next.replacement.replace(/\\begin\{figure\}\[h\]/i, '\\begin{figure}[H]');
     validations.push(next.validation);
     replaced += 1;
     cursor = block.end;

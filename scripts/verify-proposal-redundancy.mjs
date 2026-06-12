@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { DEFAULT_PROJECT } from '../shared/mathlmDefaults.js';
 import {
   appendRedundancyNote,
+  applyRedundancyCompliancePenalties,
   prepareProjectForProposal,
   validateLatexRedundancy,
   validateProjectRedundancy
@@ -42,6 +43,27 @@ This proposal studies compact language models for multi-step math reasoning with
 
 const latexCheck = validateLatexRedundancy(latexDup);
 assert.ok(latexCheck.warnings.length >= 1, 'duplicate paragraphs in LaTeX should be reported');
+
+const crossSectionLatex = String.raw`\documentclass{article}
+\begin{document}
+\section{Motivation and Gap}
+We will train a process reward model with dense step-level feedback on multi-step math word problems.
+\section{Method and Training Workflow}
+We will train a process reward model with dense step-level feedback on multi-step math word problems.
+\end{document}`;
+
+const crossSectionCheck = validateLatexRedundancy(crossSectionLatex);
+assert.ok(crossSectionCheck.issues.length >= 1, 'cross-section duplicate sentences should be reported as issues');
+
+const penalized = applyRedundancyCompliancePenalties(
+  [{ requirement: 'Evaluation plan with metrics', status: 'Covered', evidence: 'ok', fix: '' }],
+  { postcheck: crossSectionCheck }
+);
+assert.equal(
+  penalized[0].status,
+  'Covered',
+  'redundancy findings belong in the evaluation report, not compliance coverage rows'
+);
 
 const note = appendRedundancyNote('# Report', {
   precheck: crossCheck,
