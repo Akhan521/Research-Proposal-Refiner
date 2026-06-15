@@ -1657,21 +1657,28 @@ function App() {
                         </span>
                       </div>
                       <div className="proposal-length-slider-wrap">
-                        <input
-                          type="range"
-                          className="proposal-length-slider"
-                          min={PROPOSAL_PAGE_MIN}
-                          max={PROPOSAL_PAGE_MAX}
-                          step={1}
-                          value={proposalPageTarget}
-                          onChange={(event) => setProposalPageTarget(normalizeProposalPageTarget(event.target.value))}
-                          disabled={status !== 'idle'}
-                          style={{ '--proposal-length-fill': `${proposalLengthFill}%` }}
-                          aria-valuemin={PROPOSAL_PAGE_MIN}
-                          aria-valuemax={PROPOSAL_PAGE_MAX}
-                          aria-valuenow={proposalPageTarget}
-                          aria-describedby="proposal-length-hint"
-                        />
+                        <div className="proposal-length-slider-shell">
+                          <div className="proposal-length-slider-rail" aria-hidden="true">
+                            <div
+                              className="proposal-length-slider-fill"
+                              style={{ width: `${proposalLengthFill}%` }}
+                            />
+                          </div>
+                          <input
+                            type="range"
+                            className="proposal-length-slider"
+                            min={PROPOSAL_PAGE_MIN}
+                            max={PROPOSAL_PAGE_MAX}
+                            step={1}
+                            value={proposalPageTarget}
+                            onChange={(event) => setProposalPageTarget(normalizeProposalPageTarget(event.target.value))}
+                            disabled={status !== 'idle'}
+                            aria-valuemin={PROPOSAL_PAGE_MIN}
+                            aria-valuemax={PROPOSAL_PAGE_MAX}
+                            aria-valuenow={proposalPageTarget}
+                            aria-describedby="proposal-length-hint"
+                          />
+                        </div>
                         <div className="proposal-length-ticks" aria-hidden="true">
                           {PROPOSAL_PAGE_OPTIONS.map((pages) => (
                             <span
