@@ -46,6 +46,15 @@ import {
 import { repairStructuralLatex } from './latexRepair.js';
 import { repairUnescapedSpecialChars, validateProposalLatex } from './latexValidate.js';
 import {
+  getProposalLengthProfile,
+  normalizeProposalPageTarget,
+  PROPOSAL_PAGE_DEFAULT
+} from '../shared/proposalLength.js';
+import {
+  enforceProposalPageBudget,
+  formatPageLengthNote
+} from './proposalLength.js';
+import {
   appendRedundancyNote,
   prepareProjectForProposal,
   validateLatexRedundancy
@@ -54,7 +63,7 @@ import {
 const EMPTY_PROJECT_FOR_SERVER = createBlankProject();
 const PROJECT_FALLBACKS = DEFAULT_PROJECT;
 
-const SYSTEM_PROMPT = `You are a research proposal agent for a CS research proposal.
+const SYSTEM_PROMPT_BASE = `You are a research proposal agent for a CS research proposal.
 
 Return strict JSON with this shape:
 {
@@ -94,6 +103,12 @@ Rules:
 - The Evaluation Plan is rebuilt from project.evaluation. Include research questions, metrics/benchmarks, baselines, ablations, analysis plan, and success criteria with enough detail for formal review. State hypotheses explicitly when applicable.
 - Mark only unsupported claims as assumptions when references are missing or vague.
 - If the project provides a "layAbstract", add a short "Plain-Language Summary" section near the top that uses that accessible text so non-expert readers can understand the work.`;
+
+function buildSystemPrompt(pageTarget = PROPOSAL_PAGE_DEFAULT) {
+  const pages = normalizeProposalPageTarget(pageTarget);
+  return `${SYSTEM_PROMPT_BASE}
+- Keep the compiled PDF near ${pages} page(s). Proposals must never exceed five pages; trim lists, milestones, and prose rather than overflow.`;
+}
 
 const QUESTION_SYSTEM_PROMPT = `You are running an interactive proposal-agent workflow.
 
@@ -378,6 +393,9 @@ export async function generateProposal(payload) {
   const normalizedEvaluation = normalizeEvaluationField(project.evaluation, project);
   const normalizedProject = {
     ...project,
+    proposalPageTarget: normalizeProposalPageTarget(
+      payload.proposalPageTarget ?? project.proposalPageTarget
+    ),
     references: limitedReferences.references || project.references,
     resources: normalizedResources.resources || project.resources,
     timeline: normalizedTimeline.timeline || project.timeline,
@@ -538,6 +556,7 @@ async function generateWithApi(project, checklist, llmModel) {
   const promptPayload = {
     project,
     checklist,
+    proposalPageTarget: normalizeProposalPageTarget(project.proposalPageTarget),
     citationKeys: buildCitationRegistry(project.references || '', []).entries.slice(0, 5).map((entry) => ({
       key: entry.key,
       inText: entry.inTextParenthetical,
@@ -553,7 +572,7 @@ async function generateWithApi(project, checklist, llmModel) {
   };
 
   const content = await callModel({
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: buildSystemPrompt(project.proposalPageTarget),
     payload: promptPayload,
     model,
     temperature: 0.2
@@ -822,11 +841,25 @@ async function finalizeProposalOutput(result, project, checklist, options = {}) 
     precheck: options.redundancyPrecheck || {},
     postcheck: redundancyPostcheck
   });
+
+  const pageLengthResult = await enforceProposalPageBudget(layoutLatex, project, {
+    author: PROPOSAL_AUTHOR
+  });
+  layoutLatex = pageLengthResult.latex;
+  evaluationReport = `${evaluationReport}\n\n## Page Length\n${formatPageLengthNote(pageLengthResult)}`;
+
   return {
     ...result,
     proposalLatex: layoutLatex,
     complianceMatrix,
     evaluationReport,
+    pageLength: {
+      targetPages: pageLengthResult.targetPages,
+      pageCount: pageLengthResult.pageCount,
+      withinLimit: pageLengthResult.withinLimit,
+      compilerUnavailable: pageLengthResult.compilerUnavailable,
+      attempts: pageLengthResult.attempts
+    },
     latexValidation: {
       validated: validation.validated,
       repaired: validation.repaired,
@@ -1521,7 +1554,8 @@ function normalizePayload(payload) {
     resources: clean(payload.resources),
     references: clean(payload.references),
     layAbstract: clean(payload.layAbstract),
-    requirements: clean(payload.requirements) || DEFAULT_REQUIREMENTS
+    requirements: clean(payload.requirements) || DEFAULT_REQUIREMENTS,
+    proposalPageTarget: normalizeProposalPageTarget(payload.proposalPageTarget)
   };
 }
 
@@ -2074,6 +2108,7 @@ function plainLanguageSummarySection(project) {
   const layAbstract = clean(project.layAbstract);
 
   if (!layAbstract) return '';
+  if (!getProposalLengthProfile(project.proposalPageTarget).includePlainSummary) return '';
 
   return `\n\\section*{Plain-Language Summary}\n${latexParagraph(layAbstract)}\n`;
 }

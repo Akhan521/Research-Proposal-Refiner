@@ -7,6 +7,13 @@ import {
   withDefaultProject
 } from '../shared/mathlmDefaults.js';
 import {
+  PROPOSAL_PAGE_DEFAULT,
+  PROPOSAL_PAGE_MAX,
+  PROPOSAL_PAGE_MIN,
+  PROPOSAL_PAGE_OPTIONS,
+  normalizeProposalPageTarget
+} from '../shared/proposalLength.js';
+import {
   AlertCircle,
   BookOpen,
   CheckCircle2,
@@ -181,6 +188,7 @@ function App() {
   const [literatureSummaryStatus, setLiteratureSummaryStatus] = useState('idle');
   const [lastInsertedLiteratureSummary, setLastInsertedLiteratureSummary] = useState('');
   const [llmModel, setLlmModel] = useState('');
+  const [proposalPageTarget, setProposalPageTarget] = useState(PROPOSAL_PAGE_DEFAULT);
   const [llmConfig, setLlmConfig] = useState(null);
   const [suggestionGuidance, setSuggestionGuidance] = useState('');
   const [decisionGuidance, setDecisionGuidance] = useState('');
@@ -207,6 +215,8 @@ function App() {
   const generationProvider = useMemo(() => formatGenerationProvider(result), [result]);
 
   const acceptedCount = PROJECT_FIELDS.filter(([field]) => Boolean(project[field])).length;
+  const proposalLengthFill =
+    ((proposalPageTarget - PROPOSAL_PAGE_MIN) / (PROPOSAL_PAGE_MAX - PROPOSAL_PAGE_MIN)) * 100;
   const acceptedSuggestionCount = fieldSuggestions.filter((suggestion) =>
     isSuggestionApplied(project[suggestion.field], suggestion.value)
   ).length;
@@ -488,6 +498,7 @@ function App() {
         ...project,
         topic: project.topic || project.title,
         requirements: DEFAULT_REQUIREMENTS,
+        proposalPageTarget,
         literaturePapers: selectedLiteraturePapers,
         ...buildLlmExtras(llmModel)
       });
@@ -495,9 +506,12 @@ function App() {
       setResult(data);
       setActiveWorkspaceView('output');
       setActiveTab('latex');
+      const pageNote = data.pageLength?.pageCount
+        ? ` ${data.pageLength.pageCount} page(s) (target ${data.pageLength.targetPages}).`
+        : '';
       setRunLog((current) => [
         ...current,
-        logEntry('Draft', `Generated proposal using ${data.mode}.`),
+        logEntry('Draft', `Generated proposal using ${data.mode}.${pageNote}`),
         logEntry('Review', `Coverage ${countCovered(data.complianceMatrix)}/${data.complianceMatrix?.length || 0}.`)
       ]);
 
@@ -1052,6 +1066,7 @@ function App() {
     setSuggestionGuidance('');
     setDecisionGuidance('');
     setRefiningScope(null);
+    setProposalPageTarget(PROPOSAL_PAGE_DEFAULT);
   }
 
   function downloadLatex() {
@@ -1100,7 +1115,8 @@ function App() {
       activeWorkspaceView,
       suggestionIndex,
       decisionIndex,
-      llmModel
+      llmModel,
+      proposalPageTarget
     };
 
     localStorage.setItem(MEMORY_KEY, JSON.stringify(snapshot));
@@ -1199,6 +1215,7 @@ function App() {
     setSuggestionIndex(snapshot.suggestionIndex);
     setDecisionIndex(snapshot.decisionIndex);
     setLlmModel(snapshot.llmModel);
+    setProposalPageTarget(normalizeProposalPageTarget(snapshot.proposalPageTarget));
     setMemorySavedAt(snapshot.savedAt);
   }
 
@@ -1628,11 +1645,55 @@ function App() {
                   ))}
                 </div>
                 <div className="project-generate-row">
-                  <div className="project-generate-action">
-                    <button className="primary" disabled={!project.title || status !== 'idle'} onClick={generateProposal} type="button">
-                      {status === 'drafting' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}
-                      {status === 'drafting' ? 'Generating draft…' : 'Generate Proposal'}
-                    </button>
+                  <div className="proposal-length-panel">
+                    <div className="proposal-length-control">
+                      <div className="proposal-length-header">
+                        <div className="proposal-length-heading">
+                          <span className="proposal-length-label">Proposal length</span>
+                          <span className="proposal-length-subtitle">Target page count for your export</span>
+                        </div>
+                        <span className="proposal-length-value-badge" aria-live="polite">
+                          {proposalPageTarget} {proposalPageTarget === 1 ? 'page' : 'pages'}
+                        </span>
+                      </div>
+                      <div className="proposal-length-slider-wrap">
+                        <input
+                          type="range"
+                          className="proposal-length-slider"
+                          min={PROPOSAL_PAGE_MIN}
+                          max={PROPOSAL_PAGE_MAX}
+                          step={1}
+                          value={proposalPageTarget}
+                          onChange={(event) => setProposalPageTarget(normalizeProposalPageTarget(event.target.value))}
+                          disabled={status !== 'idle'}
+                          style={{ '--proposal-length-fill': `${proposalLengthFill}%` }}
+                          aria-valuemin={PROPOSAL_PAGE_MIN}
+                          aria-valuemax={PROPOSAL_PAGE_MAX}
+                          aria-valuenow={proposalPageTarget}
+                          aria-describedby="proposal-length-hint"
+                        />
+                        <div className="proposal-length-ticks" aria-hidden="true">
+                          {PROPOSAL_PAGE_OPTIONS.map((pages) => (
+                            <span
+                              key={pages}
+                              className={pages === proposalPageTarget ? 'is-active' : undefined}
+                            >
+                              {pages}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <p id="proposal-length-hint" className="proposal-length-hint">
+                        Slide between {PROPOSAL_PAGE_MIN} and {PROPOSAL_PAGE_MAX} pages. Your draft is trimmed to fit this target.
+                      </p>
+                    </div>
+                    <div className="proposal-length-divider" aria-hidden="true" />
+                    <div className="project-generate-action">
+                      <button className="primary" disabled={!project.title || status !== 'idle'} onClick={generateProposal} type="button">
+                        {status === 'drafting' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}
+                        {status === 'drafting' ? 'Generating draft…' : 'Generate Proposal'}
+                      </button>
+                    </div>
                   </div>
                   {status === 'drafting' ? (
                     <p className="project-generate-hint" role="status">
@@ -3094,7 +3155,8 @@ function normalizeMemorySnapshot(value) {
     activeWorkspaceView,
     suggestionIndex: Number.isFinite(Number(snapshot.suggestionIndex)) ? Number(snapshot.suggestionIndex) : 0,
     decisionIndex: Number.isFinite(Number(snapshot.decisionIndex)) ? Number(snapshot.decisionIndex) : 0,
-    llmModel: typeof snapshot.llmModel === 'string' ? snapshot.llmModel : ''
+    llmModel: typeof snapshot.llmModel === 'string' ? snapshot.llmModel : '',
+    proposalPageTarget: normalizeProposalPageTarget(snapshot.proposalPageTarget)
   };
 }
 

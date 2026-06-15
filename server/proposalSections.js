@@ -1,4 +1,5 @@
 import { formatEntryForLatex } from './latexEscape.js';
+import { getProposalLengthProfile } from '../shared/proposalLength.js';
 import {
   applyCitationFormattingToProse,
   formatProsePreservingCiteCommands,
@@ -926,7 +927,8 @@ export function buildNsfStyleAbstract(project = {}) {
   paragraphs.push(impactParts.join(' '));
 
   let abstract = dedupeSentencesAcrossBlocks(paragraphs).join('\n\n');
-  if (wordCount(abstract) > 280) {
+  const abstractMaxWords = getProposalLengthProfile(project.proposalPageTarget).abstractMaxWords;
+  if (wordCount(abstract) > abstractMaxWords) {
     abstract = dedupeSentencesAcrossBlocks([
       truncateToSentences(problem || paragraphs[0], 2),
       truncateToSentences(method || objectiveText, 1),

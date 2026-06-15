@@ -39,7 +39,8 @@ export async function compileLatexDocument(document) {
     const tectonicPath = resolveBundledTectonic() || 'tectonic';
     await runTectonic(tectonicPath, workdir, texPath);
     const pdf = await readFile(pdfPath);
-    return { ok: true, pdf };
+    const pageCount = await readAuxPageCount(workdir);
+    return { ok: true, pdf, pageCount };
   } catch (error) {
     if (isMissingTectonicError(error)) {
       return {
@@ -100,8 +101,22 @@ function resolveBundledTectonic() {
   }
 }
 
+export function countPagesFromAux(auxContent) {
+  const match = String(auxContent || '').match(/\\@abspage@last\{(\d+)\}/);
+  return match ? Number(match[1]) || 0 : 0;
+}
+
+async function readAuxPageCount(workdir) {
+  try {
+    const aux = await readFile(path.join(workdir, 'proposal.aux'), 'utf8');
+    return countPagesFromAux(aux);
+  } catch {
+    return 0;
+  }
+}
+
 async function runTectonic(tectonicPath, workdir, texPath) {
-  const args = ['--outdir', workdir, texPath];
+  const args = ['--keep-intermediates', '--outdir', workdir, texPath];
 
   try {
     await execFileAsync(tectonicPath, args, {
