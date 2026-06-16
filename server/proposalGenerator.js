@@ -424,7 +424,8 @@ export async function generateProposal(payload) {
     knownPapers: limitedKnownPapers,
     milestoneValidation: normalizedTimeline.validation,
     citationRegistry,
-    redundancyPrecheck
+    redundancyPrecheck,
+    resourcesText: normalizedResources.resources || normalizedProject.resources
   });
 }
 
@@ -843,7 +844,8 @@ async function finalizeProposalOutput(result, project, checklist, options = {}) 
   });
 
   const pageLengthResult = await enforceProposalPageBudget(layoutLatex, project, {
-    author: PROPOSAL_AUTHOR
+    author: PROPOSAL_AUTHOR,
+    resourcesText: options.resourcesText
   });
   layoutLatex = pageLengthResult.latex;
   evaluationReport = `${evaluationReport}\n\n## Page Length\n${formatPageLengthNote(pageLengthResult)}`;

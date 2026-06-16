@@ -1,9 +1,12 @@
 import { PROPOSAL_AUTHOR } from '../shared/mathlmDefaults.js';
 import {
   getProposalLengthProfile,
+  getResourceItemCap,
   normalizeProposalPageTarget,
-  PROPOSAL_PAGE_MAX
+  PROPOSAL_PAGE_MAX,
+  PROPOSAL_RESOURCES_MIN
 } from '../shared/proposalLength.js';
+import { enforceResourcesInProposalLatex, parseResourceGroups } from './resourceFormat.js';
 import { truncateToSentences } from './textSegmentation.js';
 import { compileLatexDocument, prepareLatexDocument } from './pdfExport.js';
 
@@ -82,6 +85,20 @@ function limitItemizeBlocks(latex, maxItems) {
   });
 }
 
+function capListItemsInSection(latex, sectionTitle, maxItems) {
+  if (!maxItems || maxItems < 1) return latex;
+
+  const pattern = new RegExp(
+    `(\\\\section\\*?\\{${escapeRegExp(sectionTitle)}[^}]*\\})([\\s\\S]*?)(?=\\\\section\\*?\\{|\\\\section\\{|\\\\end\\{document\\})`,
+    'i'
+  );
+
+  return latex.replace(pattern, (full, heading, body) => {
+    const limited = limitItemizeBlocks(body, maxItems);
+    return `${heading}${limited}`;
+  });
+}
+
 function capListItemsInSubsection(latex, subsectionTitle, maxItems) {
   const pattern = new RegExp(
     `(\\\\subsection\\*\\{${escapeRegExp(subsectionTitle)}\\}[\\s\\S]*?)(?=\\\\subsection\\*\\{|\\\\section\\*?\\{|\\\\section\\{|\\\\end\\{document\\})`,
@@ -136,12 +153,78 @@ function limitBibliographyItems(latex, maxItems) {
 }
 
 function capResourcesSection(latex, maxItems) {
-  const pattern = /\\section\*?\{Resources\}([\s\S]*?)(?=\\section\*?\{|\\section\{|\\end\{document\})/i;
-  return latex.replace(pattern, (full, body) => {
-    if (!/\\begin\{itemize\}/i.test(body)) return full;
-    const limited = limitItemizeBlocks(body, maxItems);
-    return full.replace(body, limited);
-  });
+  const cap = getResourceItemCap(maxItems);
+
+  return latex.replace(
+    /(\\section\*?\{Resources\})([\s\S]*?)(?=\\section\*?\{|\\section\{|\\end\{document\})/i,
+    (full, heading, body) => {
+      const totalItems = (body.match(/\\item\b/g) || []).length;
+      if (totalItems <= cap) return full;
+
+      let remaining = cap;
+      const newBody = body.replace(
+        /\\begin\{itemize\}(\[[^\]]*\])?([\s\S]*?)\\end\{itemize\}/gi,
+        (block, options = '', inner = '') => {
+          if (remaining <= 0) return '';
+          const items = inner.split(/\\item\b/).map((entry) => entry.trim()).filter(Boolean);
+          if (!items.length) return block;
+          const keepCount = Math.min(remaining, items.length);
+          remaining -= keepCount;
+          if (keepCount === items.length) return block;
+          const trimmed = items
+            .slice(0, keepCount)
+            .map((entry) => `  \\item ${entry}`)
+            .join('\n');
+          return `\\begin{itemize}${options}\n${trimmed}\n\\end{itemize}`;
+        }
+      );
+
+      const cleaned = newBody.replace(
+        /\\subsection\*\{[^}]*\}\s*(?=(\\subsection\*|\\section|\\end\{document\}))/gi,
+        ''
+      );
+
+      return `${heading}${cleaned}`;
+    }
+  );
+}
+
+export function countResourceItemsInLatex(latex) {
+  const match = String(latex || '').match(
+    /\\section\*?\{Resources\}([\s\S]*?)(?=\\section\*?\{|\\section\{|\\end\{document\})/i
+  );
+  if (!match) return 0;
+  return (match[1].match(/\\item\b/g) || []).length;
+}
+
+function countAvailableResources(resourcesText) {
+  const parsed = parseResourceGroups(resourcesText);
+  let total = 0;
+  for (const category of parsed.categories) {
+    total += (parsed.groups.get(category.key) || []).filter(Boolean).length;
+  }
+  return total || (clean(resourcesText) ? 1 : 0);
+}
+
+function ensureMinimumResources(latex, resourcesText, minItems = PROPOSAL_RESOURCES_MIN) {
+  const available = countAvailableResources(resourcesText);
+  if (!available) return latex;
+
+  const floor = Math.min(available, minItems);
+  let next = String(latex || '');
+  let count = countResourceItemsInLatex(next);
+
+  if (count < floor) {
+    const restored = enforceResourcesInProposalLatex(next, resourcesText);
+    next = restored.latex;
+    count = countResourceItemsInLatex(next);
+  }
+
+  if (count > available) {
+    next = capResourcesSection(next, available);
+  }
+
+  return next;
 }
 
 function injectCompactGeometry(latex, margin = '0.85in') {
@@ -190,8 +273,9 @@ function proseForLatex(text, maxSentences) {
     .join('\n\n');
 }
 
-export function applyProposalLengthProfile(latex, project = {}, pageTarget = project.proposalPageTarget) {
+export function applyProposalLengthProfile(latex, project = {}, pageTarget = project.proposalPageTarget, options = {}) {
   const profile = getProposalLengthProfile(pageTarget);
+  const resourcesText = trimResourcesText(options.resourcesText) || trimResourcesText(project.resources || '');
   let next = String(latex || '');
 
   if (!profile.includePlainSummary) {
@@ -217,8 +301,8 @@ export function applyProposalLengthProfile(latex, project = {}, pageTarget = pro
   next = limitEnumerateBlocks(next, profile.methodEnumerateItems);
   next = capListItemsInSubsection(next, 'Expected Results', profile.expectedResultCap);
   next = capListItemsInSubsection(next, 'Research Milestones and Timeline', profile.milestoneCap);
-  next = limitItemizeBlocks(next, profile.riskItems);
-  next = capResourcesSection(next, profile.resourcesItems);
+  next = capListItemsInSection(next, 'Risks and Mitigation', profile.riskItems);
+  next = capResourcesSection(next, getResourceItemCap(profile.resourcesItems));
   next = limitBibliographyItems(next, profile.bibliographyCap);
 
   if (profile.dropFigure) {
@@ -266,9 +350,10 @@ export function applyProposalLengthProfile(latex, project = {}, pageTarget = pro
     if (milestoneSummary) {
       next = replaceSectionBody(next, 'Expected Results and Research Milestones', milestoneSummary);
     }
-    next = stripSection(next, 'Resources');
     next = limitBibliographyItems(next, 1);
   }
+
+  next = ensureMinimumResources(next, resourcesText, PROPOSAL_RESOURCES_MIN);
 
   if (profile.tightenSpacing) {
     next = injectTightSpacingPreamble(next);
@@ -297,7 +382,6 @@ function tightenProposalLatex(latex, passIndex = 1, targetPages = PROPOSAL_PAGE_
     if (targetPages <= 1) {
       next = stripSection(next, 'Project Goal');
       next = stripSection(next, 'Risks and Mitigation');
-      next = compactSectionProse(next, 'Resources', 1);
       next = injectSmallBodyFont(next);
     }
   }
@@ -322,7 +406,7 @@ function tightenProposalLatex(latex, passIndex = 1, targetPages = PROPOSAL_PAGE_
   if (passIndex >= 3) {
     next = injectTightSpacingPreamble(next);
     next = injectCompactGeometry(next);
-    next = capResourcesSection(next, Math.max(2, 4 - passIndex));
+    next = capResourcesSection(next, getResourceItemCap(Math.max(PROPOSAL_RESOURCES_MIN, 4 - passIndex)));
   }
 
   if (passIndex >= 4) {
@@ -334,7 +418,6 @@ function tightenProposalLatex(latex, passIndex = 1, targetPages = PROPOSAL_PAGE_
     next = stripSection(next, 'Project Goal');
     next = limitBibliographyItems(next, targetPages <= 1 ? 1 : 2);
     if (targetPages <= 1) {
-      next = stripSection(next, 'Resources');
       next = trimAbstractSection(next, 1);
       next = compactSectionProse(next, 'Method and Training Workflow', 1);
     }
@@ -362,12 +445,18 @@ function stripLatexMarkup(text) {
   );
 }
 
+function trimResourcesText(value) {
+  return String(value ?? '').trim();
+}
+
 export async function enforceProposalPageBudget(latex, project = {}, options = {}) {
   const targetPages = normalizeProposalPageTarget(project.proposalPageTarget);
   const title = project.title || project.topic || 'proposal';
   const author = options.author || PROPOSAL_AUTHOR;
+  const resourcesText = trimResourcesText(options.resourcesText) || trimResourcesText(project.resources);
+  const lengthOptions = { resourcesText };
 
-  let current = applyProposalLengthProfile(latex, project, targetPages);
+  let current = applyProposalLengthProfile(latex, project, targetPages, lengthOptions);
   let pageCount = 0;
   let compilerUnavailable = false;
   const attempts = [];
@@ -394,6 +483,18 @@ export async function enforceProposalPageBudget(latex, project = {}, options = {
     current = tightenProposalLatex(current, pass + 1, targetPages);
   }
 
+  current = ensureMinimumResources(current, resourcesText, PROPOSAL_RESOURCES_MIN);
+
+  const finalCompile = await compileLatexDocument(prepareLatexDocument(current, title, { author }));
+  if (finalCompile.ok) {
+    pageCount = finalCompile.pageCount || countPdfPages(finalCompile.pdf, { pageCount: finalCompile.pageCount });
+    attempts.push({ pass: 'resources-floor', pageCount });
+  } else if (finalCompile.compilerUnavailable) {
+    compilerUnavailable = true;
+  } else {
+    attempts.push({ pass: 'resources-floor', error: finalCompile.error || 'compile failed' });
+  }
+
   return {
     latex: current,
     targetPages,
@@ -414,5 +515,10 @@ export function formatPageLengthNote(result = {}) {
   }
 
   const status = result.withinLimit ? 'within target' : 'above target after trimming';
-  return `- Proposal length: ${result.pageCount} page(s) compiled (${status}; selected target ${result.targetPages}, maximum ${PROPOSAL_PAGE_MAX}).`;
+  const resourceItems = countResourceItemsInLatex(result.latex);
+  const resourceNote =
+    resourceItems >= PROPOSAL_RESOURCES_MIN
+      ? `- Resources: ${resourceItems} item(s) retained (minimum ${PROPOSAL_RESOURCES_MIN} when available).`
+      : `- Resources: ${resourceItems} item(s) retained (fewer than ${PROPOSAL_RESOURCES_MIN} listed in project state).`;
+  return `- Proposal length: ${result.pageCount} page(s) compiled (${status}; selected target ${result.targetPages}, maximum ${PROPOSAL_PAGE_MAX}).\n${resourceNote}`;
 }

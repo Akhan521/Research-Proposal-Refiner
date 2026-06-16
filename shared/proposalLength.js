@@ -2,11 +2,18 @@ export const PROPOSAL_PAGE_MIN = 1;
 export const PROPOSAL_PAGE_MAX = 5;
 export const PROPOSAL_PAGE_DEFAULT = 3;
 export const PROPOSAL_PAGE_OPTIONS = [1, 2, 3, 4, 5];
+export const PROPOSAL_RESOURCES_MIN = 3;
 
 export function normalizeProposalPageTarget(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return PROPOSAL_PAGE_DEFAULT;
   return Math.max(PROPOSAL_PAGE_MIN, Math.min(PROPOSAL_PAGE_MAX, Math.round(parsed)));
+}
+
+export function getResourceItemCap(profileCap) {
+  const parsed = Number(profileCap);
+  if (!Number.isFinite(parsed)) return PROPOSAL_RESOURCES_MIN;
+  return Math.max(PROPOSAL_RESOURCES_MIN, Math.round(parsed));
 }
 
 export function getProposalLengthProfile(pageTarget) {
@@ -24,7 +31,7 @@ export function getProposalLengthProfile(pageTarget) {
       compactEvaluation: true,
       evaluationSentences: 1,
       riskItems: 1,
-      resourcesItems: 1,
+      resourcesItems: 3,
       bibliographyCap: 2,
       dropFigure: true,
       dropRisks: true,
@@ -44,7 +51,7 @@ export function getProposalLengthProfile(pageTarget) {
       compactEvaluation: true,
       evaluationSentences: 2,
       riskItems: 2,
-      resourcesItems: 2,
+      resourcesItems: 3,
       bibliographyCap: 3,
       dropFigure: true,
       dropRisks: true,

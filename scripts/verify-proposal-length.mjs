@@ -3,12 +3,24 @@ import {
   PROPOSAL_PAGE_MAX,
   PROPOSAL_PAGE_MIN,
   PROPOSAL_PAGE_OPTIONS,
+  PROPOSAL_RESOURCES_MIN,
   normalizeProposalPageTarget
 } from '../shared/proposalLength.js';
 import { SUBMISSION_PROJECT } from '../shared/submissionProject.js';
+import { PROPOSAL_AUTHOR } from '../shared/mathlmDefaults.js';
 import { generateProposal } from '../server/proposalGenerator.js';
-import { compileLatexDocument } from '../server/pdfExport.js';
-import { countPdfPages } from '../server/proposalLength.js';
+import { compileLatexDocument, prepareLatexDocument } from '../server/pdfExport.js';
+import { countPdfPages, countResourceItemsInLatex } from '../server/proposalLength.js';
+import { parseResourceGroups } from '../server/resourceFormat.js';
+
+function countAvailableResources(resourcesText) {
+  const parsed = parseResourceGroups(resourcesText);
+  let total = 0;
+  for (const category of parsed.categories) {
+    total += (parsed.groups.get(category.key) || []).filter(Boolean).length;
+  }
+  return total || (String(resourcesText || '').trim() ? 1 : 0);
+}
 
 assert.equal(normalizeProposalPageTarget(0), PROPOSAL_PAGE_MIN);
 assert.equal(normalizeProposalPageTarget(99), PROPOSAL_PAGE_MAX);
@@ -26,11 +38,22 @@ for (const target of PROPOSAL_PAGE_OPTIONS) {
 
   assert.equal(result.pageLength?.targetPages, target, `metadata target for ${target} pages`);
 
-  const compile = await compileLatexDocument(result.proposalLatex);
+  const document = prepareLatexDocument(result.proposalLatex, SUBMISSION_PROJECT.title, {
+    author: PROPOSAL_AUTHOR
+  });
+  const compile = await compileLatexDocument(document);
   assert.equal(compile.ok, true, compile.error || `compile failed for target ${target}`);
 
   const pages = compile.pageCount || countPdfPages(compile.pdf, { pageCount: compile.pageCount });
   pageCounts.set(target, pages);
+
+  const resourceItems = countResourceItemsInLatex(result.proposalLatex);
+  const availableResources = countAvailableResources(SUBMISSION_PROJECT.resources);
+  const expectedResources = Math.min(availableResources, PROPOSAL_RESOURCES_MIN);
+  assert.ok(
+    resourceItems >= expectedResources,
+    `target ${target}: expected at least ${expectedResources} resource item(s), found ${resourceItems}`
+  );
 
   assert.ok(pages > 0, `target ${target}: expected a positive page count`);
   assert.ok(
@@ -47,7 +70,7 @@ for (const target of PROPOSAL_PAGE_OPTIONS) {
     );
   }
 
-  console.log(`target ${target}: ${pages} compiled page(s)`);
+  console.log(`target ${target}: ${pages} compiled page(s), ${resourceItems} resource item(s)`);
 }
 
 const onePage = pageCounts.get(1);
