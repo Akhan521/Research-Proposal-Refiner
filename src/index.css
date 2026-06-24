@@ -646,7 +646,7 @@ textarea:focus {
 
 .memory-bar {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   border: 1px solid #cbd7dc;
@@ -655,10 +655,11 @@ textarea:focus {
   background: #ffffff;
 }
 
-.memory-bar div:first-child {
+.memory-bar-copy {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
+  min-width: 0;
 }
 
 .memory-bar strong {
@@ -666,17 +667,32 @@ textarea:focus {
   font-size: 0.9rem;
 }
 
-.memory-bar span {
+.memory-bar span,
+.memory-bar-copy span {
   color: #647177;
-  font-size: 0.82rem;
-  font-weight: 700;
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.45;
+  max-width: 36rem;
 }
 
 .memory-actions {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.memory-actions .secondary {
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.memory-action-danger:not(:disabled):hover {
+  border-color: #d9b0b0;
+  background: #fff5f5;
+  color: #8f3f3f;
 }
 
 .deck-progress,
@@ -1960,10 +1976,6 @@ textarea:focus {
   justify-content: center;
   gap: 6px;
   font-size: 0.82rem;
-}
-
-.memory-actions .secondary {
-  gap: 6px;
 }
 
 .run-log-toggle {

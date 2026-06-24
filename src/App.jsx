@@ -40,6 +40,7 @@ import {
   RotateCcw,
   Send,
   Sparkles,
+  Trash2,
   X
 } from 'lucide-react';
 
@@ -236,6 +237,26 @@ function App() {
   const currentSuggestion = fieldSuggestions[suggestionIndex] || null;
   const currentDecision = decisions[decisionIndex] || null;
   const currentQuestion = questions[0];
+  const hasBrowserBackup = Boolean(memorySavedAt);
+  const workspaceBackupHint = useMemo(() => {
+    if (!memoryHydrated) {
+      return 'Checking for a saved workspace in this browser…';
+    }
+
+    const parts = ['Auto-saves as you work in this browser.'];
+
+    if (memorySavedAt) {
+      parts.push(`Last backup ${formatSavedAt(memorySavedAt)}.`);
+    }
+
+    if (versionHistory.length) {
+      parts.push(
+        `${versionHistory.length} session restore point${versionHistory.length === 1 ? '' : 's'} in Output → History.`
+      );
+    }
+
+    return parts.join(' ');
+  }, [memoryHydrated, memorySavedAt, versionHistory.length]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1254,7 +1275,7 @@ function App() {
       localStorage.removeItem(LEGACY_MEMORY_KEY);
 
       if (!silent) {
-        setRunLog((current) => [...current, logEntry('Memory', 'Reloaded saved workspace memory.')]);
+        setRunLog((current) => [...current, logEntry('Memory', 'Restored browser workspace backup.')]);
       }
 
       return true;
@@ -1396,10 +1417,18 @@ function App() {
   }
 
   function clearSavedMemory() {
+    if (!hasBrowserBackup) return;
+
+    const confirmed = window.confirm(
+      'Clear the saved workspace backup from this browser? Your current session will stay as-is.'
+    );
+    if (!confirmed) return;
+
     localStorage.removeItem(MEMORY_KEY);
     localStorage.removeItem(LEGACY_MEMORY_KEY);
     setMemorySavedAt('');
     setError('');
+    setRunLog((current) => [...current, logEntry('Memory', 'Cleared browser workspace backup.')]);
   }
 
   const currentWorkspaceView = WORKSPACE_VIEWS.find((view) => view.id === activeWorkspaceView) || WORKSPACE_VIEWS[0];
@@ -1472,23 +1501,30 @@ function App() {
               </div>
 
               <div className="memory-bar">
-                <div>
-                  <strong>Memory</strong>
-                  <span>{memorySavedAt ? `Saved ${formatSavedAt(memorySavedAt)}` : 'No saved workspace yet'}</span>
+                <div className="memory-bar-copy">
+                  <strong>Workspace backup</strong>
+                  <span>{workspaceBackupHint}</span>
                 </div>
                 <div className="memory-actions">
-                  <button className="secondary" type="button" onClick={saveManualCheckpoint}>
-                    <History size={15} aria-hidden="true" />
-                    Checkpoint
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={!hasBrowserBackup}
+                    title="Load the last workspace backup saved in this browser"
+                    onClick={() => loadSavedMemory()}
+                  >
+                    <RotateCcw size={15} aria-hidden="true" />
+                    Restore backup
                   </button>
-                  <button className="secondary" type="button" onClick={() => saveMemory()}>
-                    Save
-                  </button>
-                  <button className="secondary" type="button" onClick={() => loadSavedMemory()}>
-                    Reload
-                  </button>
-                  <button className="secondary" type="button" onClick={clearSavedMemory}>
-                    Clear
+                  <button
+                    className="secondary memory-action-danger"
+                    type="button"
+                    disabled={!hasBrowserBackup}
+                    title="Remove the saved workspace backup from this browser"
+                    onClick={clearSavedMemory}
+                  >
+                    <Trash2 size={15} aria-hidden="true" />
+                    Clear backup
                   </button>
                 </div>
               </div>
