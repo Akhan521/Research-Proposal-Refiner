@@ -1846,6 +1846,126 @@ textarea:focus {
   word-break: break-word;
 }
 
+.run-log-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.run-log-time {
+  flex-shrink: 0;
+  color: #7a8b92;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.run-log-restore-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #2f6f62;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.run-log-restore-link:hover:not(:disabled) {
+  color: #1f4f45;
+  text-decoration: underline;
+}
+
+.run-log-restore-link:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.history-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.history-tab {
+  border: 1px solid #d5e0e4;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #f7fafb;
+  color: #4f5d62;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.history-tab--active {
+  border-color: #2f6f62;
+  background: #eaf4f0;
+  color: #28584b;
+}
+
+.version-list {
+  gap: 8px;
+}
+
+.version-item {
+  border: 1px solid #e3ecef;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #ffffff;
+}
+
+.version-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.version-trigger {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: #eef2f8;
+  color: #3f4f66;
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.version-label {
+  margin: 0 0 4px;
+  color: #2f3a3d;
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.version-summary {
+  margin: 0 0 10px;
+  color: #66757b;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.version-restore {
+  width: 100%;
+  justify-content: center;
+  gap: 6px;
+  font-size: 0.82rem;
+}
+
+.memory-actions .secondary {
+  gap: 6px;
+}
+
 .run-log-toggle {
   width: 100%;
   justify-content: center;

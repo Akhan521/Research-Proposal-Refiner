@@ -14,6 +14,13 @@ import {
   normalizeProposalPageTarget
 } from '../shared/proposalLength.js';
 import {
+  createVersionId,
+  normalizeVersionHistory,
+  summarizeVersion,
+  trimVersionHistory,
+  VERSION_TRIGGER_LABELS
+} from '../shared/versionHistory.js';
+import {
   AlertCircle,
   BookOpen,
   CheckCircle2,
@@ -24,11 +31,13 @@ import {
   Download,
   ExternalLink,
   FileText,
+  History,
   LayoutDashboard,
   ListChecks,
   Loader2,
   Play,
   RefreshCw,
+  RotateCcw,
   Send,
   Sparkles,
   X
@@ -163,6 +172,8 @@ function App() {
   const [pdfStatus, setPdfStatus] = useState('idle');
   const [pdfExportError, setPdfExportError] = useState('');
   const [runLog, setRunLog] = useState([]);
+  const [versionHistory, setVersionHistory] = useState([]);
+  const [restoringVersionId, setRestoringVersionId] = useState('');
   const [status, setStatus] = useState('idle');
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('pdf');
@@ -305,11 +316,13 @@ function App() {
     questions,
     result,
     runLog,
+    versionHistory,
     activeTab,
     activeWorkspaceView,
     suggestionIndex,
     decisionIndex,
-    llmModel
+    llmModel,
+    proposalPageTarget
   ]);
 
   useEffect(() => {
@@ -412,8 +425,21 @@ function App() {
       setQuestions(data.questions || []);
       setSuggestionIndex(0);
       setDecisionIndex(0);
+      const structureVersionId = appendVersionCheckpoint('Structured topic', 'structure', {
+        override: {
+          project: withDefaultProject(data.project),
+          fieldSuggestions: data.fieldSuggestions || [],
+          decisions: data.decisions || [],
+          questions: data.questions || [],
+          result: null,
+          activeWorkspaceView: 'structure',
+          suggestionIndex: 0,
+          decisionIndex: 0
+        },
+        linkLog: false
+      });
       setRunLog([
-        logEntry('Extract', data.runMessage || 'LLM prepared structured suggestions.'),
+        logEntry('Extract', data.runMessage || 'LLM prepared structured suggestions.', { versionId: structureVersionId }),
         logEntry('Decide', `Review ${(data.fieldSuggestions || []).length} fields and ${(data.decisions || []).length} decision card(s).`)
       ]);
       setCustomNote('');
@@ -452,9 +478,21 @@ function App() {
       setQuestions(data.questions || []);
       setSuggestionIndex(0);
       setDecisionIndex(0);
+      const updateVersionId = appendVersionCheckpoint('Project updated', 'update', {
+        override: {
+          project: withDefaultProject(data.project),
+          fieldSuggestions: data.fieldSuggestions || [],
+          decisions: data.decisions || [],
+          questions: data.questions || [],
+          result: null,
+          suggestionIndex: 0,
+          decisionIndex: 0
+        },
+        linkLog: false
+      });
       setRunLog((current) => [
         ...current,
-        logEntry('Update', data.runMessage || 'Integrated custom note.'),
+        logEntry('Update', data.runMessage || 'Integrated custom note.', { versionId: updateVersionId }),
         logEntry('Decide', `Refreshed ${(data.fieldSuggestions || []).length} suggested field(s).`)
       ]);
       setCustomNote('');
@@ -509,9 +547,21 @@ function App() {
       const pageNote = data.pageLength?.pageCount
         ? ` ${data.pageLength.pageCount} page(s) (target ${data.pageLength.targetPages}).`
         : '';
+      const draftVersionId = appendVersionCheckpoint(
+        pageNote.trim() ? `Proposal draft${pageNote}` : 'Proposal draft',
+        'draft',
+        {
+          override: {
+            result: compactResult(data),
+            activeWorkspaceView: 'output',
+            activeTab: 'latex'
+          },
+          linkLog: false
+        }
+      );
       setRunLog((current) => [
         ...current,
-        logEntry('Draft', `Generated proposal using ${data.mode}.${pageNote}`),
+        logEntry('Draft', `Generated proposal using ${data.mode}.${pageNote}`, { versionId: draftVersionId }),
         logEntry('Review', `Coverage ${countCovered(data.complianceMatrix)}/${data.complianceMatrix?.length || 0}.`)
       ]);
 
@@ -732,50 +782,52 @@ function App() {
   function acceptSuggestion(suggestion, { mode = 'merge' } = {}) {
     const field = suggestion.field;
     const incoming = String(suggestion.value || '').trim();
-    const existingBeforeAccept = String(project[field] || '').trim();
-    const shouldAdvance = mode === 'merge' && !existingBeforeAccept;
-    let merged = false;
-
-    setProject((current) => {
-      const existing = String(current[field] || '').trim();
-      const value =
-        mode === 'replace'
+    const existing = String(project[field] || '').trim();
+    const shouldAdvance = mode === 'merge' && !existing;
+    const value =
+      mode === 'replace'
+        ? incoming
+        : !existing
           ? incoming
-          : !existing
-            ? incoming
-            : existing === incoming
-              ? existing
-              : mergeAcceptedFieldValue(existing, incoming);
+          : existing === incoming
+            ? existing
+            : mergeAcceptedFieldValue(existing, incoming);
 
-      if (value === existing) {
-        return current;
-      }
-
-      merged = true;
-      return {
-        ...current,
-        [field]: value,
-        topic: current.topic || current.title || topicInput
-      };
-    });
-
-    if (merged) {
-      clearArtifacts();
-      setRunLog((current) => [
-        ...current,
-        logEntry(
-          'Accept',
-          mode === 'replace'
-            ? `Replaced ${suggestion.label || suggestion.field} with the latest suggestion.`
-            : `Merged ${suggestion.label || suggestion.field} into existing field content.`
-        )
-      ]);
-    } else {
+    if (value === existing) {
       setRunLog((current) => [
         ...current,
         logEntry('Accept', `${suggestion.label || suggestion.field} text is already in the field.`)
       ]);
+
+      if (shouldAdvance) {
+        advanceSuggestion();
+      }
+
+      return;
     }
+
+    const nextProject = {
+      ...project,
+      [field]: value,
+      topic: project.topic || project.title || topicInput
+    };
+
+    setProject(nextProject);
+    clearArtifacts();
+    const acceptVersionId = appendVersionCheckpoint(`Accepted ${suggestion.label || suggestion.field}`, 'accept', {
+      override: { project: nextProject, result: null },
+      linkLog: false
+    });
+    setRunLog((current) => [
+      ...current,
+      logEntry(
+        'Accept',
+        mode === 'replace'
+          ? `Replaced ${suggestion.label || suggestion.field} with the latest suggestion.`
+          : `Merged ${suggestion.label || suggestion.field} into existing field content.`,
+        { versionId: acceptVersionId }
+      )
+    ]);
 
     if (shouldAdvance) {
       advanceSuggestion();
@@ -806,25 +858,19 @@ function App() {
     const field = decision.field;
     const incoming = String(option.value || '').trim();
     const previousResolvedValue = String(decision.resolvedValue || '').trim();
-    let merged = false;
-
-    setProject((current) => {
-      const existing = String(current[field] || '').trim();
-      const value = applyDecisionOptionToProject(existing, incoming, previousResolvedValue);
-
-      if (value === existing) {
-        return current;
-      }
-
-      merged = true;
-      return {
-        ...current,
+    const existing = String(project[field] || '').trim();
+    const value = applyDecisionOptionToProject(existing, incoming, previousResolvedValue);
+    const merged = value !== existing;
+    const nextProject = merged
+      ? {
+        ...project,
         [field]: value,
-        topic: current.topic || current.title || topicInput
-      };
-    });
+        topic: project.topic || project.title || topicInput
+      }
+      : project;
 
     if (merged) {
+      setProject(nextProject);
       clearArtifacts();
     }
 
@@ -840,13 +886,23 @@ function App() {
       )
     );
 
+    let decisionVersionId = '';
+
+    if (merged) {
+      decisionVersionId = appendVersionCheckpoint(`Decision: ${decision.title}`, 'decision', {
+        override: { project: nextProject, result: null },
+        linkLog: false
+      });
+    }
+
     setRunLog((current) => [
       ...current,
       logEntry(
         'Decision',
         previousResolvedValue
           ? `Updated ${decision.title} to ${option.label}.`
-          : `Selected ${option.label} for ${decision.title}.`
+          : `Selected ${option.label} for ${decision.title}.`,
+        decisionVersionId ? { versionId: decisionVersionId } : {}
       )
     ]);
   }
@@ -990,13 +1046,25 @@ function App() {
         throw new Error(data.detail || data.error || 'Field refinement failed.');
       }
 
-      updateProjectField(field, data.value || '');
+      const nextProject = {
+        ...project,
+        [field]: data.value || '',
+        topic: project.topic || project.title || topicInput
+      };
+
+      setProject(nextProject);
+      clearArtifacts();
+      const fieldVersionId = appendVersionCheckpoint(`Strengthened ${label}`, 'field', {
+        override: { project: nextProject, result: null },
+        linkLog: false
+      });
       setRunLog((current) => [
         ...current,
         logEntry(
           'Project',
           data.note ||
-          `Strengthened ${label}${data.mode === 'local-fallback' ? ' (local template)' : ''}.`
+          `Strengthened ${label}${data.mode === 'local-fallback' ? ' (local template)' : ''}.`,
+          { versionId: fieldVersionId }
         )
       ]);
 
@@ -1045,6 +1113,7 @@ function App() {
     setCustomNote('');
     clearArtifacts();
     setRunLog([]);
+    setVersionHistory([]);
     setError('');
     setActiveTab('pdf');
     setActiveWorkspaceView('start');
@@ -1111,6 +1180,7 @@ function App() {
       questions,
       result: compactResult(result),
       runLog,
+      versionHistory,
       activeTab,
       activeWorkspaceView,
       suggestionIndex,
@@ -1216,7 +1286,113 @@ function App() {
     setDecisionIndex(snapshot.decisionIndex);
     setLlmModel(snapshot.llmModel);
     setProposalPageTarget(normalizeProposalPageTarget(snapshot.proposalPageTarget));
+    setVersionHistory(normalizeVersionHistory(snapshot.versionHistory));
     setMemorySavedAt(snapshot.savedAt);
+  }
+
+  function snapshotWorkspaceState() {
+    return {
+      topicInput,
+      project,
+      fieldSuggestions,
+      decisions,
+      questions,
+      result: compactResult(result),
+      activeWorkspaceView,
+      activeTab,
+      suggestionIndex,
+      decisionIndex,
+      proposalPageTarget
+    };
+  }
+
+  function appendVersionCheckpoint(label, trigger, { override = null, linkLog = true } = {}) {
+    const entry = {
+      id: createVersionId(),
+      label,
+      trigger,
+      savedAt: new Date().toISOString(),
+      ...snapshotWorkspaceState(),
+      ...(override || {})
+    };
+
+    setVersionHistory((current) => trimVersionHistory([...current, entry]));
+
+    if (linkLog) {
+      setRunLog((current) => [...current, logEntry('Checkpoint', label, { versionId: entry.id })]);
+    }
+
+    return entry.id;
+  }
+
+  function saveManualCheckpoint() {
+    const title = project.title || project.topic || topicInput || 'workspace';
+    appendVersionCheckpoint(`Saved: ${title}`, 'manual');
+  }
+
+  function applyVersionSnapshot(version) {
+    setTopicInput(version.topicInput || '');
+    setProject(withDefaultProject(version.project));
+    setFieldSuggestions(version.fieldSuggestions || []);
+    setDecisions(version.decisions || []);
+    setQuestions(version.questions || []);
+
+    const restoredResult = version.result;
+    setResult(
+      restoredResult
+        ? { ...restoredResult, provider: normalizeStoredProvider(restoredResult.provider) }
+        : null
+    );
+    setActiveTab(version.activeTab || 'latex');
+    setActiveWorkspaceView(version.activeWorkspaceView || 'start');
+    setSuggestionIndex(version.suggestionIndex ?? 0);
+    setDecisionIndex(version.decisionIndex ?? 0);
+    setProposalPageTarget(normalizeProposalPageTarget(version.proposalPageTarget));
+    setExplain(null);
+    updatePdfUrl('');
+    setPdfStatus('idle');
+    setPdfExportError('');
+  }
+
+  async function restoreVersionCheckpoint(versionId) {
+    const version = versionHistory.find((entry) => entry.id === versionId);
+    if (!version) return;
+
+    const confirmed = window.confirm(`Restore checkpoint "${version.label}"? Current unsaved edits will be replaced.`);
+    if (!confirmed) return;
+
+    setRestoringVersionId(versionId);
+    setError('');
+
+    try {
+      applyVersionSnapshot(version);
+      setRunLog((current) => [
+        ...current,
+        logEntry('Checkpoint', `Restored "${version.label}".`, { versionId: version.id })
+      ]);
+
+      if (version.result?.proposalLatex) {
+        setPdfStatus('loading');
+        setPdfExportError('');
+
+        try {
+          const url = await exportPdfUrl(
+            version.result.proposalLatex,
+            version.project?.title || 'proposal',
+            withDefaultProject(version.project)
+          );
+          updatePdfUrl(url);
+          setPdfStatus('ready');
+        } catch (requestError) {
+          setPdfStatus('error');
+          setPdfExportError(readError(requestError));
+        }
+      }
+    } catch (restoreError) {
+      setError(`Could not restore checkpoint: ${readError(restoreError)}`);
+    } finally {
+      setRestoringVersionId('');
+    }
   }
 
   function clearSavedMemory() {
@@ -1301,6 +1477,10 @@ function App() {
                   <span>{memorySavedAt ? `Saved ${formatSavedAt(memorySavedAt)}` : 'No saved workspace yet'}</span>
                 </div>
                 <div className="memory-actions">
+                  <button className="secondary" type="button" onClick={saveManualCheckpoint}>
+                    <History size={15} aria-hidden="true" />
+                    Checkpoint
+                  </button>
                   <button className="secondary" type="button" onClick={() => saveMemory()}>
                     Save
                   </button>
@@ -1729,7 +1909,13 @@ function App() {
           {activeWorkspaceView === 'output' ? (
             <div className="view-page view-page--output">
               <div className="workflow-columns workflow-columns--output">
-                <RunLogPanel entries={runLog} />
+                <HistoryPanel
+                  entries={runLog}
+                  versions={versionHistory}
+                  onRestore={restoreVersionCheckpoint}
+                  onSaveCheckpoint={saveManualCheckpoint}
+                  restoringVersionId={restoringVersionId}
+                />
 
                 <div className="artifacts-column">
                   <div className="artifact-toolbar">
@@ -2898,7 +3084,8 @@ function RevisePanel({ value, onChange, onClose, onSubmit, placeholder, disabled
   );
 }
 
-function RunLogPanel({ entries }) {
+function HistoryPanel({ entries, versions, onRestore, onSaveCheckpoint, restoringVersionId }) {
+  const [panelTab, setPanelTab] = useState('activity');
   const [showAll, setShowAll] = useState(false);
   const listRef = useRef(null);
   const total = entries.length;
@@ -2906,6 +3093,7 @@ function RunLogPanel({ entries }) {
   const fullEntriesNewestFirst = useMemo(() => [...entries].reverse(), [entries]);
   const visibleEntries = showAll ? fullEntriesNewestFirst : recentEntries;
   const hiddenCount = Math.max(0, total - RUN_LOG_RECENT_COUNT);
+  const versionsNewestFirst = useMemo(() => [...versions].reverse(), [versions]);
 
   useEffect(() => {
     if (!showAll || !listRef.current) return;
@@ -2913,52 +3101,137 @@ function RunLogPanel({ entries }) {
   }, [showAll, entries.length]);
 
   return (
-    <div className="run-log-column">
+    <div className="run-log-column history-panel">
       <div className="run-log-header">
         <div>
-          <h2>Run Log</h2>
+          <h2>History</h2>
           <p className="run-log-subtitle">
-            {total ? (showAll ? 'Full history, newest first' : `Latest ${Math.min(total, RUN_LOG_RECENT_COUNT)} events`) : 'Activity from this session'}
+            {panelTab === 'activity'
+              ? total
+                ? showAll
+                  ? 'Full activity, newest first'
+                  : `Latest ${Math.min(total, RUN_LOG_RECENT_COUNT)} events`
+                : 'Activity from this session'
+              : versions.length
+                ? `${versions.length} restore point${versions.length === 1 ? '' : 's'}`
+                : 'Checkpoints appear as you work'}
           </p>
         </div>
-        {total ? <span className="run-log-count">{total} total</span> : null}
+        {panelTab === 'activity' && total ? <span className="run-log-count">{total} total</span> : null}
+        {panelTab === 'versions' && versions.length ? (
+          <span className="run-log-count">{versions.length} saved</span>
+        ) : null}
       </div>
 
-      <section className="run-log-panel" aria-label="Run log">
-        <div className="run-log-body">
-          {total ? (
-            <>
-              <ol
-                ref={listRef}
-                className={['run-log', showAll ? 'run-log--scroll' : 'run-log--compact'].join(' ')}
-              >
-                {visibleEntries.map((entry) => (
-                  <li key={entry.id} className="run-log-item">
-                    <span className="run-log-stage">{entry.stage}</span>
-                    <p>{entry.message}</p>
-                  </li>
-                ))}
-              </ol>
+      <div className="history-tabs" role="tablist" aria-label="History views">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={panelTab === 'activity'}
+          className={['history-tab', panelTab === 'activity' ? 'history-tab--active' : ''].join(' ')}
+          onClick={() => setPanelTab('activity')}
+        >
+          Activity
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={panelTab === 'versions'}
+          className={['history-tab', panelTab === 'versions' ? 'history-tab--active' : ''].join(' ')}
+          onClick={() => setPanelTab('versions')}
+        >
+          Checkpoints
+        </button>
+      </div>
 
-              {hiddenCount > 0 ? (
-                <button className="secondary run-log-toggle" type="button" onClick={() => setShowAll((current) => !current)}>
-                  {showAll ? (
-                    <>
-                      <ChevronDown size={16} aria-hidden="true" />
-                      Show recent only
-                    </>
-                  ) : (
-                    <>
-                      <ChevronDown size={16} className="run-log-toggle-icon" aria-hidden="true" />
-                      View all {total} events ({hiddenCount} older)
-                    </>
-                  )}
-                </button>
-              ) : null}
-            </>
+      <section className="run-log-panel" aria-label="Workspace history">
+        <div className="run-log-body">
+          {panelTab === 'activity' ? (
+            total ? (
+              <>
+                <ol
+                  ref={listRef}
+                  className={['run-log', showAll ? 'run-log--scroll' : 'run-log--compact'].join(' ')}
+                >
+                  {visibleEntries.map((entry) => (
+                    <li key={entry.id} className="run-log-item">
+                      <div className="run-log-item-top">
+                        <span className="run-log-stage">{entry.stage}</span>
+                        {entry.at ? <time className="run-log-time" dateTime={entry.at}>{formatLogTime(entry.at)}</time> : null}
+                      </div>
+                      <p>{entry.message}</p>
+                      {entry.versionId ? (
+                        <button
+                          className="run-log-restore-link"
+                          type="button"
+                          disabled={Boolean(restoringVersionId)}
+                          onClick={() => onRestore(entry.versionId)}
+                        >
+                          <RotateCcw size={13} aria-hidden="true" />
+                          Restore checkpoint
+                        </button>
+                      ) : null}
+                    </li>
+                  ))}
+                </ol>
+
+                {hiddenCount > 0 ? (
+                  <button className="secondary run-log-toggle" type="button" onClick={() => setShowAll((current) => !current)}>
+                    {showAll ? (
+                      <>
+                        <ChevronDown size={16} aria-hidden="true" />
+                        Show recent only
+                      </>
+                    ) : (
+                      <>
+                        <ChevronDown size={16} className="run-log-toggle-icon" aria-hidden="true" />
+                        View all {total} events ({hiddenCount} older)
+                      </>
+                    )}
+                  </button>
+                ) : null}
+              </>
+            ) : (
+              <EmptyState text="Run log appears after the idea is structured." compact />
+            )
+          ) : versions.length ? (
+            <ol className="run-log run-log--scroll version-list">
+              {versionsNewestFirst.map((version) => (
+                <li key={version.id} className="version-item">
+                  <div className="version-item-top">
+                    <span className="version-trigger">{VERSION_TRIGGER_LABELS[version.trigger] || version.trigger}</span>
+                    <time className="run-log-time" dateTime={version.savedAt}>
+                      {formatRelativeTime(version.savedAt)}
+                    </time>
+                  </div>
+                  <p className="version-label">{version.label}</p>
+                  <p className="version-summary">{summarizeVersion(version, { projectFields: PROJECT_FIELDS })}</p>
+                  <button
+                    className="secondary version-restore"
+                    type="button"
+                    disabled={restoringVersionId === version.id}
+                    onClick={() => onRestore(version.id)}
+                  >
+                    {restoringVersionId === version.id ? (
+                      <Loader2 className="spin" size={14} aria-hidden="true" />
+                    ) : (
+                      <RotateCcw size={14} aria-hidden="true" />
+                    )}
+                    Restore
+                  </button>
+                </li>
+              ))}
+            </ol>
           ) : (
-            <EmptyState text="Run log appears after the idea is structured." compact />
+            <EmptyState text="Checkpoints are saved when you structure, accept fields, decide, strengthen, or generate a draft." compact />
           )}
+
+          {panelTab === 'versions' ? (
+            <button className="secondary run-log-toggle" type="button" onClick={onSaveCheckpoint}>
+              <History size={15} aria-hidden="true" />
+              Save checkpoint now
+            </button>
+          ) : null}
         </div>
       </section>
     </div>
@@ -3158,6 +3431,7 @@ function normalizeMemorySnapshot(value) {
       }
       : null,
     runLog: Array.isArray(snapshot.runLog) ? snapshot.runLog : [],
+    versionHistory: normalizeVersionHistory(snapshot.versionHistory),
     activeTab,
     activeWorkspaceView,
     suggestionIndex: Number.isFinite(Number(snapshot.suggestionIndex)) ? Number(snapshot.suggestionIndex) : 0,
@@ -3498,11 +3772,13 @@ function labelForField(field) {
   return found?.[1] || 'Field';
 }
 
-function logEntry(stage, message) {
+function logEntry(stage, message, extras = {}) {
   return {
     id: `${stage}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     stage,
-    message
+    message,
+    at: new Date().toISOString(),
+    ...extras
   };
 }
 
@@ -3587,6 +3863,52 @@ function formatSavedAt(value) {
     hour: '2-digit',
     minute: '2-digit'
   });
+}
+
+function formatLogTime(at) {
+  const date = new Date(at);
+
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+
+  if (sameDay) {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  return date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+function formatRelativeTime(iso) {
+  const date = new Date(iso);
+
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  const diffMs = Date.now() - date.getTime();
+
+  if (diffMs < 60_000) {
+    return 'Just now';
+  }
+
+  if (diffMs < 3_600_000) {
+    return `${Math.floor(diffMs / 60_000)}m ago`;
+  }
+
+  if (diffMs < 86_400_000) {
+    return `${Math.floor(diffMs / 3_600_000)}h ago`;
+  }
+
+  return formatLogTime(iso);
 }
 
 export default App;
