@@ -208,6 +208,9 @@ function App() {
   const [decisionReviseOpen, setDecisionReviseOpen] = useState(false);
   const [refiningScope, setRefiningScope] = useState(null);
   const [refiningProjectField, setRefiningProjectField] = useState(null);
+  const [restorePickerOpen, setRestorePickerOpen] = useState(false);
+  const [historyPanelTab, setHistoryPanelTab] = useState('activity');
+  const [backupNotice, setBackupNotice] = useState('');
   const problemFieldRef = useRef(null);
   const workspaceMainRef = useRef(null);
   const lastLiteratureSummaryRef = useRef('');
@@ -238,25 +241,24 @@ function App() {
   const currentDecision = decisions[decisionIndex] || null;
   const currentQuestion = questions[0];
   const hasBrowserBackup = Boolean(memorySavedAt);
-  const workspaceBackupHint = useMemo(() => {
+  const workspaceBackupStatus = useMemo(() => {
     if (!memoryHydrated) {
-      return 'Checking for a saved workspace in this browser…';
+      return { loading: true, lastBackup: null, checkpointCount: 0 };
     }
 
-    const parts = ['Auto-saves as you work in this browser.'];
-
-    if (memorySavedAt) {
-      parts.push(`Last backup ${formatSavedAt(memorySavedAt)}.`);
-    }
-
-    if (versionHistory.length) {
-      parts.push(
-        `${versionHistory.length} session restore point${versionHistory.length === 1 ? '' : 's'} in Output → History.`
-      );
-    }
-
-    return parts.join(' ');
+    return {
+      loading: false,
+      lastBackup: memorySavedAt ? formatSavedAt(memorySavedAt) : null,
+      checkpointCount: versionHistory.length
+    };
   }, [memoryHydrated, memorySavedAt, versionHistory.length]);
+
+  useEffect(() => {
+    if (!backupNotice) return undefined;
+
+    const timeoutId = window.setTimeout(() => setBackupNotice(''), 6000);
+    return () => window.clearTimeout(timeoutId);
+  }, [backupNotice]);
 
   useEffect(() => {
     let cancelled = false;
@@ -762,6 +764,17 @@ function App() {
       workspaceMainRef.current?.scrollTo({ top: 0, behavior: 'auto' });
     });
   }
+
+  function openHistoryCheckpoints() {
+    setHistoryPanelTab('versions');
+    setRestorePickerOpen(false);
+    goToWorkspaceView('output');
+  }
+
+  const recentRestorePoints = useMemo(
+    () => [...versionHistory].reverse().slice(0, 5),
+    [versionHistory]
+  );
 
   async function runExplain(level) {
     if (!result?.proposalLatex && !project.title && !project.topic) return;
@@ -1391,6 +1404,9 @@ function App() {
         ...current,
         logEntry('Checkpoint', `Restored "${version.label}".`, { versionId: version.id })
       ]);
+      setBackupNotice(`Restored "${version.label}".`);
+      setRestorePickerOpen(false);
+      goToWorkspaceView(version.activeWorkspaceView || 'output');
 
       if (version.result?.proposalLatex) {
         setPdfStatus('loading');
@@ -1500,33 +1516,129 @@ function App() {
                 </div>
               </div>
 
-              <div className="memory-bar">
-                <div className="memory-bar-copy">
-                  <strong>Workspace backup</strong>
-                  <span>{workspaceBackupHint}</span>
+              <div className="memory-bar-wrap">
+                <div className="memory-bar">
+                  <div className="memory-bar-copy">
+                    <strong>Workspace backup</strong>
+                    {workspaceBackupStatus.loading ? (
+                      <p className="memory-bar-lead memory-bar-lead--muted">Checking for a saved workspace…</p>
+                    ) : (
+                      <>
+                        <p className="memory-bar-lead">
+                          Auto-saves in this browser. Use restore points to roll back to an earlier step.
+                        </p>
+                        <div className="memory-bar-meta" aria-label="Backup status">
+                          {workspaceBackupStatus.lastBackup ? (
+                            <span className="memory-bar-meta-item">Last backup {workspaceBackupStatus.lastBackup}</span>
+                          ) : (
+                            <span className="memory-bar-meta-item memory-bar-meta-item--muted">
+                              No backup yet — start working to save
+                            </span>
+                          )}
+                          {workspaceBackupStatus.checkpointCount > 0 ? (
+                            <span className="memory-bar-meta-item">
+                              {workspaceBackupStatus.checkpointCount} restore point
+                              {workspaceBackupStatus.checkpointCount === 1 ? '' : 's'} available
+                            </span>
+                          ) : (
+                            <span className="memory-bar-meta-item memory-bar-meta-item--muted">
+                              Restore points appear as you structure and draft
+                            </span>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  <div className="memory-actions">
+                    <button
+                      className="secondary"
+                      type="button"
+                      disabled={!versionHistory.length}
+                      title={
+                        versionHistory.length
+                          ? 'Choose a restore point from this session'
+                          : 'Restore points are created when you structure, accept fields, or generate a draft'
+                      }
+                      aria-expanded={restorePickerOpen}
+                      onClick={() => setRestorePickerOpen((current) => !current)}
+                    >
+                      <RotateCcw size={15} aria-hidden="true" />
+                      Restore earlier version
+                      {versionHistory.length ? (
+                        <ChevronDown
+                          size={15}
+                          aria-hidden="true"
+                          className={['memory-action-caret', restorePickerOpen ? 'memory-action-caret--open' : ''].join(' ')}
+                        />
+                      ) : null}
+                    </button>
+                    {versionHistory.length > 5 ? (
+                      <button
+                        className="secondary"
+                        type="button"
+                        onClick={openHistoryCheckpoints}
+                      >
+                        <History size={15} aria-hidden="true" />
+                        All restore points
+                      </button>
+                    ) : null}
+                    <button
+                      className="secondary memory-action-danger"
+                      type="button"
+                      disabled={!hasBrowserBackup}
+                      title="Remove the saved workspace backup from this browser"
+                      onClick={clearSavedMemory}
+                    >
+                      <Trash2 size={15} aria-hidden="true" />
+                      Clear backup
+                    </button>
+                  </div>
                 </div>
-                <div className="memory-actions">
-                  <button
-                    className="secondary"
-                    type="button"
-                    disabled={!hasBrowserBackup}
-                    title="Load the last workspace backup saved in this browser"
-                    onClick={() => loadSavedMemory()}
-                  >
-                    <RotateCcw size={15} aria-hidden="true" />
-                    Restore backup
-                  </button>
-                  <button
-                    className="secondary memory-action-danger"
-                    type="button"
-                    disabled={!hasBrowserBackup}
-                    title="Remove the saved workspace backup from this browser"
-                    onClick={clearSavedMemory}
-                  >
-                    <Trash2 size={15} aria-hidden="true" />
-                    Clear backup
-                  </button>
-                </div>
+
+                {backupNotice ? (
+                  <p className="memory-bar-notice" role="status">
+                    <CheckCircle2 size={15} aria-hidden="true" />
+                    {backupNotice}
+                  </p>
+                ) : null}
+
+                {restorePickerOpen && versionHistory.length ? (
+                  <div className="memory-restore-picker" aria-label="Restore points">
+                    <p className="memory-restore-picker-lead">Pick a restore point from this session:</p>
+                    <ol className="memory-restore-list">
+                      {recentRestorePoints.map((version) => (
+                        <li key={version.id} className="memory-restore-item">
+                          <div className="memory-restore-item-copy">
+                            <span className="version-trigger">
+                              {VERSION_TRIGGER_LABELS[version.trigger] || version.trigger}
+                            </span>
+                            <strong>{version.label}</strong>
+                            <span>{summarizeVersion(version, { projectFields: PROJECT_FIELDS })}</span>
+                            <time dateTime={version.savedAt}>{formatRelativeTime(version.savedAt)}</time>
+                          </div>
+                          <button
+                            className="secondary memory-restore-item-button"
+                            type="button"
+                            disabled={restoringVersionId === version.id}
+                            onClick={() => restoreVersionCheckpoint(version.id)}
+                          >
+                            {restoringVersionId === version.id ? (
+                              <Loader2 className="spin" size={14} aria-hidden="true" />
+                            ) : (
+                              <RotateCcw size={14} aria-hidden="true" />
+                            )}
+                            Restore
+                          </button>
+                        </li>
+                      ))}
+                    </ol>
+                    {versionHistory.length > recentRestorePoints.length ? (
+                      <button className="secondary memory-restore-more" type="button" onClick={openHistoryCheckpoints}>
+                        View all {versionHistory.length} restore points in History
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
 
               <div className="workflow-grid" aria-label="Workflow stages">
@@ -1948,6 +2060,8 @@ function App() {
                 <HistoryPanel
                   entries={runLog}
                   versions={versionHistory}
+                  panelTab={historyPanelTab}
+                  onPanelTabChange={setHistoryPanelTab}
                   onRestore={restoreVersionCheckpoint}
                   onSaveCheckpoint={saveManualCheckpoint}
                   restoringVersionId={restoringVersionId}
@@ -3120,8 +3234,15 @@ function RevisePanel({ value, onChange, onClose, onSubmit, placeholder, disabled
   );
 }
 
-function HistoryPanel({ entries, versions, onRestore, onSaveCheckpoint, restoringVersionId }) {
-  const [panelTab, setPanelTab] = useState('activity');
+function HistoryPanel({
+  entries,
+  versions,
+  panelTab,
+  onPanelTabChange,
+  onRestore,
+  onSaveCheckpoint,
+  restoringVersionId
+}) {
   const [showAll, setShowAll] = useState(false);
   const listRef = useRef(null);
   const total = entries.length;
@@ -3165,7 +3286,7 @@ function HistoryPanel({ entries, versions, onRestore, onSaveCheckpoint, restorin
           role="tab"
           aria-selected={panelTab === 'activity'}
           className={['history-tab', panelTab === 'activity' ? 'history-tab--active' : ''].join(' ')}
-          onClick={() => setPanelTab('activity')}
+          onClick={() => onPanelTabChange('activity')}
         >
           Activity
         </button>
@@ -3174,7 +3295,7 @@ function HistoryPanel({ entries, versions, onRestore, onSaveCheckpoint, restorin
           role="tab"
           aria-selected={panelTab === 'versions'}
           className={['history-tab', panelTab === 'versions' ? 'history-tab--active' : ''].join(' ')}
-          onClick={() => setPanelTab('versions')}
+          onClick={() => onPanelTabChange('versions')}
         >
           Checkpoints
         </button>
